@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -165,13 +165,13 @@ typedef struct chunk {
 	uint16_t hdrsize;
 	double opento;
 	double crcto;
-	unsigned crcchanged:1;
-	unsigned fsyncneeded:1;
+	uint8_t crcchanged;
+	uint8_t fsyncneeded;
 #define CH_AVAIL 0
 #define CH_LOCKED 1
 #define CH_DELETED 2
 #define CH_TOBEDELETED 3
-	unsigned state:2;	// CH_AVAIL,CH_LOCKED,CH_DELETED
+	uint8_t state;	// CH_AVAIL,CH_LOCKED,CH_DELETED
 	cntcond *ccond;
 	uint8_t *crc;
 	int fd;
@@ -2576,7 +2576,7 @@ int hdd_read(uint64_t chunkid,uint32_t version,uint16_t blocknum,uint8_t *buffer
 			errno = error;
 			hdd_error_occured(c);	// uses and preserves errno !!!
 			hdd_generate_filename(fname,c);
-			syslog(LOG_WARNING,"read_block_from_chunk: file:%s - crc error",fname);
+			syslog(LOG_WARNING,"read_block_from_chunk: file: %s ; block: %"PRIu16" - crc error (data crc: %08"PRIX32" ; check crc: %08"PRIX32")",fname,blocknum,crc,bcrc);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_CRC;
@@ -2585,7 +2585,7 @@ int hdd_read(uint64_t chunkid,uint32_t version,uint16_t blocknum,uint8_t *buffer
 			errno = error;
 			hdd_error_occured(c);	// uses and preserves errno !!!
 			hdd_generate_filename(fname,c); // preserves errno !!!
-			mfs_arg_errlog_silent(LOG_WARNING,"read_block_from_chunk: file:%s - read error",fname);
+			mfs_arg_errlog_silent(LOG_WARNING,"read_block_from_chunk: file: %s ; block: %"PRIu16" - read error",fname,blocknum);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_IO;
@@ -2618,8 +2618,8 @@ int hdd_read(uint64_t chunkid,uint32_t version,uint16_t blocknum,uint8_t *buffer
 #else /* USE_PIO */
 		lseek(c->fd,c->hdrsize+CHUNKCRCSIZE+(((uint32_t)blocknum)<<MFSBLOCKBITS),SEEK_SET);
 		ret = read(c->fd,blockbuffer,MFSBLOCKSIZE);
-		error = errno;
 #endif /* USE_PIO */
+		error = errno;
 		te = monotonic_nseconds();
 		hdd_stats_dataread(c->owner,MFSBLOCKSIZE,te-ts);
 //		crc = mycrc32(0,blockbuffer+offset,size);	// first calc crc for piece
@@ -2642,7 +2642,7 @@ int hdd_read(uint64_t chunkid,uint32_t version,uint16_t blocknum,uint8_t *buffer
 			errno = error;
 			hdd_error_occured(c);	// uses and preserves errno !!!
 			hdd_generate_filename(fname,c);
-			syslog(LOG_WARNING,"read_block_from_chunk: file:%s - crc error",fname);
+			syslog(LOG_WARNING,"read_block_from_chunk: file: %s ; block: %"PRIu16" - crc error (data crc: %08"PRIX32" (0:%"PRIu32" - %08"PRIX32" ; %"PRIu32":%"PRIu32" - %08"PRIX32" ; %"PRIu32":%u - %08"PRIX32") ; check crc: %08"PRIX32")",fname,blocknum,combinedcrc,offset,precrc,offset,size,crc,offset+size,MFSBLOCKSIZE-(offset+size),postcrc,bcrc);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_CRC;
@@ -2651,7 +2651,7 @@ int hdd_read(uint64_t chunkid,uint32_t version,uint16_t blocknum,uint8_t *buffer
 			errno = error;
 			hdd_error_occured(c);	// uses and preserves errno !!!
 			hdd_generate_filename(fname,c); // preserves errno !!!
-			mfs_arg_errlog_silent(LOG_WARNING,"read_block_from_chunk: file:%s - read error",fname);
+			mfs_arg_errlog_silent(LOG_WARNING,"read_block_from_chunk: file: %s ; block: %"PRIu16" - read error",fname,blocknum);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_IO;
@@ -2809,7 +2809,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 			errno = error;
 			hdd_error_occured(c);
 			hdd_generate_filename(fname,c);
-			syslog(LOG_WARNING,"write_block_to_chunk: file:%s - crc error",fname);
+			syslog(LOG_WARNING,"write_block_to_chunk: file: %s ; block: %"PRIu16" - crc error (data crc: %08"PRIX32" ; check crc: %08"PRIX32")",fname,blocknum,mycrc32(0,buffer,MFSBLOCKSIZE),crc);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_CRC;
@@ -2824,7 +2824,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 			errno = error;
 			hdd_error_occured(c);	// uses and preserves errno !!!
 			hdd_generate_filename(fname,c); // preserves errno !!!
-			mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file:%s - write error",fname);
+			mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file: %s ; block: %"PRIu16" - write error",fname,blocknum);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_IO;
@@ -2869,7 +2869,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 				errno = error;
 				hdd_error_occured(c);	// uses and preserves errno !!!
 				hdd_generate_filename(fname,c); // preserves errno !!!
-				mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file:%s - read error",fname);
+				mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file: %s ; block: %"PRIu16" - read error",fname,blocknum);
 				hdd_report_damaged_chunk(chunkid);
 				hdd_chunk_release(c);
 				return MFS_ERROR_IO;
@@ -2898,7 +2898,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 				errno = error;
 				hdd_error_occured(c);	// uses and preserves errno !!!
 				hdd_generate_filename(fname,c); // preserves errno !!!
-				syslog(LOG_WARNING,"write_block_to_chunk: file:%s - crc error",fname);
+				syslog(LOG_WARNING,"write_block_to_chunk: file: %s ; block: %"PRIu16" - crc error (data crc: %08"PRIX32" (0:%"PRIu32" - %08"PRIX32" ; %"PRIu32":%"PRIu32" - %08"PRIX32" ; %"PRIu32":%u - %08"PRIX32") ; check crc: %08"PRIX32")",fname,blocknum,combinedcrc,offset,precrc,offset,size,chcrc,offset+size,MFSBLOCKSIZE-(offset+size),postcrc,bcrc);
 				hdd_report_damaged_chunk(chunkid);
 				hdd_chunk_release(c);
 				return MFS_ERROR_CRC;
@@ -2916,7 +2916,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 			memset(c->block,0,MFSBLOCKSIZE);
 			c->blockno = blocknum;
 #else /* PRESERVE_BLOCK */
-			memset(blockbuffer,0,MFSBLOCKSIZE);
+//			memset(blockbuffer,0,MFSBLOCKSIZE); // not needed (we do not preserve this buffer) !!!
 #endif /* PRESERVE_BLOCK */
 			precrc = mycrc32_zeroblock(0,offset);
 			postcrc = mycrc32_zeroblock(0,MFSBLOCKSIZE-(offset+size));
@@ -2979,7 +2979,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 		if (size>0 && crc!=chcrc) {
 			hdd_error_occured(c);	// uses and preserves errno !!!
 			hdd_generate_filename(fname,c); // preserves errno !!!
-			syslog(LOG_WARNING,"write_block_to_chunk: file:%s - crc error",fname);
+			syslog(LOG_WARNING,"write_block_to_chunk: file: %s ; block: %"PRIu16" - crc error (%"PRIu32":%"PRIu32" ; data crc: %08"PRIX32" ; check crc: %08"PRIX32")",fname,blocknum,offset,size,chcrc,crc);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_CRC;
@@ -2991,7 +2991,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 			errno = error;
 			hdd_error_occured(c);	// uses and preserves errno !!!
 			hdd_generate_filename(fname,c); // preserves errno !!!
-			mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file:%s - write error",fname);
+			mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file: %s ; block: %"PRIu16" - write error",fname,blocknum);
 			hdd_report_damaged_chunk(chunkid);
 			hdd_chunk_release(c);
 			return MFS_ERROR_IO;
@@ -3000,7 +3000,7 @@ int hdd_write(uint64_t chunkid,uint32_t version,uint16_t blocknum,const uint8_t 
 			if (ftruncate(c->fd,c->hdrsize+CHUNKCRCSIZE+(((uint32_t)(blocknum+1))<<MFSBLOCKBITS))<0) {
 				hdd_error_occured(c);	// uses and preserves errno !!!
 				hdd_generate_filename(fname,c); // preserves errno !!!
-				mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file:%s - ftruncate error",fname);
+				mfs_arg_errlog_silent(LOG_WARNING,"write_block_to_chunk: file: %s ; block: %"PRIu16" - ftruncate error",fname,blocknum);
 				hdd_report_damaged_chunk(chunkid);
 				hdd_chunk_release(c);
 				return MFS_ERROR_IO;
@@ -3712,6 +3712,11 @@ static int hdd_int_truncate(uint64_t chunkid,uint32_t version,uint32_t newversio
 			hdd_chunk_release(c);
 			return MFS_ERROR_IO;
 		}
+#ifdef PRESERVE_BLOCK
+		if (c->blockno>=blocks) {
+			c->blockno = 0xFFFF;	// invalidate truncated block
+		}
+#endif
 		if (blocksize>0) {
 			if (ftruncate(c->fd,c->hdrsize+CHUNKCRCSIZE+(blocks<<MFSBLOCKBITS))<0) {
 				hdd_error_occured(c);	// uses and preserves errno !!!
@@ -3721,10 +3726,7 @@ static int hdd_int_truncate(uint64_t chunkid,uint32_t version,uint32_t newversio
 				return MFS_ERROR_IO;
 			}
 #ifdef PRESERVE_BLOCK
-			if (c->blockno>=blocks) {
-				c->blockno = 0xFFFF;	// invalidate truncated block
-			}
-			if (c->blockno!=(blockpos>>MFSBLOCKBITS)) {
+			if (c->blockno!=blocknum) {
 
 #ifdef USE_PIO
 				if (pread(c->fd,c->block,blocksize,c->hdrsize+CHUNKCRCSIZE+blockpos)!=(signed)blocksize) {
@@ -3750,7 +3752,7 @@ static int hdd_int_truncate(uint64_t chunkid,uint32_t version,uint32_t newversio
 #ifdef PRESERVE_BLOCK
 			}
 			memset(c->block+blocksize,0,MFSBLOCKSIZE-blocksize);
-			c->blockno = blockpos>>MFSBLOCKBITS;
+			c->blockno = blocknum;
 			i = mycrc32_zeroexpanded(0,c->block,blocksize,MFSBLOCKSIZE-blocksize);
 #else /* PRESERVE_BLOCK */
 			i = mycrc32_zeroexpanded(0,blockbuffer,blocksize,MFSBLOCKSIZE-blocksize);
@@ -3919,7 +3921,7 @@ static int hdd_int_duptrunc(uint64_t chunkid,uint32_t version,uint32_t newversio
 	lseek(oc->fd,oc->hdrsize+CHUNKCRCSIZE,SEEK_SET);
 #endif /* PRESERVE_BLOCK */
 	if (blocks>oc->blocks) { // expanding
-		truncneeded = 0;
+//		truncneeded = 0; - always expanding here
 		for (block=0 ; block<oc->blocks ; block++) {
 #ifdef PRESERVE_BLOCK
 			if (oc->blockno==block) {
@@ -4005,11 +4007,11 @@ static int hdd_int_duptrunc(uint64_t chunkid,uint32_t version,uint32_t newversio
 				return MFS_ERROR_IO;	//write error
 			}
 			hdd_stats_write(nzend-nzstart);
-			if (nzend!=MFSBLOCKSIZE) {
-				truncneeded = 1;
-			} else {
-				truncneeded = 0;
-			}
+//			if (nzend!=MFSBLOCKSIZE) { // at the end we always have truncate, so we don't need to calculate this here (code left as comment to be sure that it is commented out on purpose)
+//				truncneeded = 1;
+//			} else {
+//				truncneeded = 0;
+//			}
 #ifdef PRESERVE_BLOCK
 			c->blockno = block;
 #endif /* PRESERVE_BLOCK */
@@ -4142,7 +4144,7 @@ static int hdd_int_duptrunc(uint64_t chunkid,uint32_t version,uint32_t newversio
 				}
 			}
 		} else { // misaligned shrink
-			truncneeded = 0;
+//			truncneeded = 0; - we need to check it only in last block
 			for (block=0 ; block<blocks-1 ; block++) {
 #ifdef PRESERVE_BLOCK
 				if (oc->blockno==block) {
@@ -4228,11 +4230,11 @@ static int hdd_int_duptrunc(uint64_t chunkid,uint32_t version,uint32_t newversio
 					return MFS_ERROR_IO;	//write error
 				}
 				hdd_stats_write(nzend-nzstart);
-				if (nzend!=MFSBLOCKSIZE) {
-					truncneeded = 1;
-				} else {
-					truncneeded = 0;
-				}
+//				if (nzend!=MFSBLOCKSIZE) { // we need to check it only in last block (below) - left as a comment on purpose
+//					truncneeded = 1;
+//				} else {
+//					truncneeded = 0;
+//				}
 			}
 			block = blocks-1;
 #ifdef PRESERVE_BLOCK
@@ -6495,6 +6497,27 @@ int hdd_init(void) {
 	for (hp=0 ; hp<DHASHSIZE ; hp++) {
 		dophashtab[hp] = NULL;
 	}
+
+#if 0
+	fprintf(stderr,"compiled with features: ");
+#ifdef PRESERVE_BLOCK
+	fprintf(stderr,"PRESERVE_BLOCK,");
+#endif
+#ifdef MMAP_ALLOC
+	fprintf(stderr,"MMAP_ALLOC,");
+#endif
+#ifdef HAVE___SYNC_OP_AND_FETCH
+	fprintf(stderr,"SYNC_OP_AND_FETCH,");
+#endif
+#ifdef HAVE___SYNC_FETCH_AND_OP
+	fprintf(stderr,"SYNC_FETCH_AND_OP,");
+#endif
+#ifdef USE_PIO
+	fprintf(stderr,"PREAD/PWRITE\n");
+#else
+	fprintf(stderr,"SEEK+READ/WRITE\n");
+#endif
+#endif
 
 #ifndef PRESERVE_BLOCK
 	zassert(pthread_key_create(&hdrbufferkey,free));

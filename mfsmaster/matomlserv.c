@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -277,8 +277,11 @@ uint8_t* matomlserv_createpacket(matomlserventry *eptr,uint32_t type,uint32_t si
 	uint32_t psize;
 
 	psize = size+8;
-	outpacket=malloc(offsetof(out_packetstruct,data)+psize);
+	outpacket = malloc(offsetof(out_packetstruct,data)+psize);
+#ifndef __clang_analyzer__
 	passert(outpacket);
+	// clang analyzer has problem with testing for (void*)(-1) which is needed for memory allocated by mmap
+#endif
 	outpacket->bytesleft = psize;
 	ptr = outpacket->data;
 	put32bit(&ptr,type);

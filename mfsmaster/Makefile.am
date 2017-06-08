@@ -55,6 +55,7 @@ mfsmaster_SOURCES=\
 	../mfscommon/cpuusage.c ../mfscommon/cpuusage.h \
 	../mfscommon/clocks.c ../mfscommon/clocks.h \
 	../mfscommon/pcqueue.c ../mfscommon/pcqueue.h \
+	../mfscommon/cuckoohash.c ../mfscommon/cuckoohash.h \
 	../mfscommon/datapack.h ../mfscommon/massert.h \
 	../mfscommon/slogger.h ../mfscommon/mfsstrerr.h \
 	../mfscommon/hashfn.h ../mfscommon/median.h \

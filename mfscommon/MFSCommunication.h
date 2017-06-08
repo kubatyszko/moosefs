@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -79,6 +79,7 @@
 #define MFS_INODE_REUSE_DELAY 86400
 
 #define TRASH_BUCKETS 4096
+#define SUSTAINED_BUCKETS 256
 
 #define MFS_STATUS_OK              0    // OK
 
@@ -383,6 +384,10 @@
 #define QUOTA_FLAG_HREALSIZE   0x80
 #define QUOTA_FLAG_HALL        0xF0
 
+// append slice
+#define APPEND_SLICE_FROM_NEG  0x01
+#define APPEND_SLICE_TO_NEG    0x02
+
 // acl:
 #define POSIX_ACL_ACCESS       1
 #define POSIX_ACL_DEFAULT      2
@@ -454,6 +459,7 @@
 #define SNAPSHOT_MODE_CAN_OVERWRITE 1
 #define SNAPSHOT_MODE_CPLIKE_ATTR 2
 #define SNAPSHOT_MODE_FORCE_REMOVAL 4
+#define SNAPSHOT_MODE_PRESERVE_HARDLINKS 8
 #define SNAPSHOT_MODE_DELETE 0x80
 
 // OK,OVERLOADED and REBALANCE are used as hlstatus field in "CSTOMA_CURRENT_LOAD", others only internally in master
@@ -835,15 +841,19 @@
 // msgid:32 status:8
 
 #define CLTOMA_SCLASS_LIST 360
-// msgid:32
+// msgid:32 fver:8
 
 #define MATOCL_SCLASS_LIST 361
-// msgid:32 N * [ storage_class_name:NAME ]
+// msgid:32
+// fver==0:
+//	N * [ storage_class_name:NAME ]
+// fver!=0:
+//	N * [ storage_class_name:NAME admin_only:8 create_mode:8 arch_delay:16 create_labelscnt:8 keep_labelscnt:8 arch_labelscnt:8 create_labelscnt * [ MASKORGROUP * [ labelmask:32 ] ] keep_labelscnt * [ MASKORGROUP * [ labelmask:32 ] ] arch_labelscnt * [ MASKORGROUP * [ labelmask:32 ] ] ]
 
 
 // Fuse
 
-// attr record
+// attr record (deprecated - versions < 1.7.32)
 //   type:8 mode:16 uid:32 gid:32 atime:32 mtime:32 ctime:32 nlink:32 length:64
 //   total: 35B
 //
@@ -854,9 +864,9 @@
 //
 // attr record (1.7.32 and up):
 //
-//   flags:8 type:4 mode:12 uid:32 gid:32 atime:32 mtime:32 ctime:32 nlink:32 [ length:64 | mojor:16 minor:16 empty:32 ]
+//   flags:8 type:4 mode:12 uid:32 gid:32 atime:32 mtime:32 ctime:32 nlink:32 [ length:64 | major:16 minor:16 empty:32 ]
 //
-//   in case of BLOCKDEV and CHARDEV instead of 'length:64' on the end there is 'mojor:16 minor:16 empty:32'
+//   in case of BLOCKDEV and CHARDEV instead of 'length:64' on the end there is 'major:16 minor:16 empty:32'
 
 
 // NAME type:
@@ -1134,12 +1144,13 @@
 
 
 // 0x01B6
-#define CLTOMA_FUSE_APPEND (PROTO_BASE+438)
+#define CLTOMA_FUSE_APPEND_SLICE (PROTO_BASE+438)
 // msgid:32 inode:32 srcinode:32 uid:32 gid:32 - version < 2.0.0
-// msgid:32 inode:32 srcinode:32 uid:32 gcnt:32 gcnt * [ gid:32 ]
+// msgid:32 inode:32 srcinode:32 uid:32 gcnt:32 gcnt * [ gid:32 ] - version < 3.0.91
+// msgid:32 flags:8 inode:32 srcinode:32 slice_from:32 slice_to:32 uid:32 gcnt:32 gcnt * [ gid:32 ]
 
 // 0x01B7
-#define MATOCL_FUSE_APPEND (PROTO_BASE+439)
+#define MATOCL_FUSE_APPEND_SLICE (PROTO_BASE+439)
 // msgid:32 status:8
 
 
@@ -1412,20 +1423,21 @@
 // msgid:32 N*[ length:32 path:lengthB ]
 
 // 0x01E8
-#define CLTOMA_FUSE_GETACL (PROTO_BASE+488)
-// msgid:32 inode:32 acltype:8 opened:8 uid:32 gcnt:32 gcnt * [ gid:32 ]
+#define CLTOMA_FUSE_GETFACL (PROTO_BASE+488)
+// msgid:32 inode:32 acltype:8 opened:8 uid:32 gcnt:32 gcnt * [ gid:32 ] (version < 3.0.92)
+// msgid:32 inode:32 acltype:8 (version >= 3.0.92)
 
 // 0x01E9
-#define MATOCL_FUSE_GETACL (PROTO_BASE+489)
+#define MATOCL_FUSE_GETFACL (PROTO_BASE+489)
 // msgid:32 status:8
 // msgid:32 userperm:16 groupperm:16 otherperm:16 mask:16 namedusers:16 namedgroups:16 namedusers * [ id:32 perm:16 ] namedgroups * [ id:32 perm:16 ]
 
 // 0x01EA
-#define CLTOMA_FUSE_SETACL (PROTO_BASE+490)
+#define CLTOMA_FUSE_SETFACL (PROTO_BASE+490)
 // msgid:32 inode:32 uid:32 acltype:8 userperm:16 groupperm:16 otherperm:16 mask:16 namedusers:16 namedgroups:16 namedusers * [ id:32 perm:16 ] namedgroups * [ id:32 perm:16 ]
 
 // 0x01EB
-#define MATOCL_FUSE_SETACL (PROTO_BASE+491)
+#define MATOCL_FUSE_SETFACL (PROTO_BASE+491)
 // msgid:32 status:8
 
 // 0x01EC

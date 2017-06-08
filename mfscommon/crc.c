@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -148,7 +148,7 @@ uint32_t mycrc32(uint32_t crc,const uint8_t *block,uint32_t leng) {
 #endif
 	CRC_REORDER;
 #ifdef WIN32
-	while (leng && ((unsigned long long int)block & 7)) {
+	while (leng && ((uintptr_t)block & 7)) {
 #else
 	while (leng && ((unsigned long int)block & 7)) {
 #endif

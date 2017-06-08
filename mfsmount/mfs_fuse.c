@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -3102,7 +3102,9 @@ void mfs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode
 	mfs_attr_to_stat(inode,attr,&e.attr);
 	mfs_makeattrstr(attrstr,256,&e.attr);
 	oplog_printf(&ctx,"create (%lu,%s,-%s:0%04o): OK (%.1lf,%lu,%.1lf,%s) (direct_io:%u,keep_cache:%u) [handle:%08"PRIX32"]",(unsigned long int)parent,name,modestr+1,(unsigned int)mode,e.entry_timeout,(unsigned long int)e.ino,e.attr_timeout,attrstr,(unsigned int)fi->direct_io,(unsigned int)fi->keep_cache,findex);
+	fs_inc_acnt(inode);
 	if (fuse_reply_create(req, &e, fi) == -ENOENT) {
+		fs_dec_acnt(inode);
 		mfs_removefileinfo(findex);
 		fi->fh = 0;
 	}
@@ -3272,8 +3274,10 @@ void mfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
 //		chunksdatacache_clear_inode(ino,0);
 //	}
 	oplog_printf(&ctx,"open (%lu)%s: OK (direct_io:%u,keep_cache:%u) [handle:%08"PRIX32"]",(unsigned long int)ino,(fdrec)?" (using cached data from lookup)":"",(unsigned int)fi->direct_io,(unsigned int)fi->keep_cache,findex);
+	fs_inc_acnt(ino);
 	if (fuse_reply_open(req, fi) == -ENOENT) {
 		mfs_removefileinfo(findex);
+		fs_dec_acnt(ino);
 		fi->fh = 0;
 	} else if (fdrec) {
 		uint32_t gidtmp = 0;
@@ -3364,12 +3368,12 @@ void mfs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
 		}
 	}
 	dcache_invalidate_attr(ino);
-	fs_release(ino);
 	oplog_printf(&ctx,"release (%lu): OK",(unsigned long int)ino);
 	fuse_reply_err(req,0);
 	if (fi->fh>0) {
 		mfs_removefileinfo(fi->fh); // after writes it waits for data sync, so do it after everything
 	}
+	fs_dec_acnt(ino);
 }
 
 void mfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
@@ -3420,7 +3424,7 @@ void mfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fus
 		return;
 	}
 	if (ino==STATS_INODE) {
-		sinfo *statsinfo = sinfo_get(fi->fh);
+		sinfo *statsinfo = (fi!=NULL)?sinfo_get(fi->fh):NULL;
 		if (statsinfo!=NULL) {
 			pthread_mutex_lock(&(statsinfo->lock));		// make helgrind happy
 			if (off>=statsinfo->leng) {
@@ -3630,7 +3634,7 @@ void mfs_write(fuse_req_t req, fuse_ino_t ino, const char *buf, size_t size, off
 		return;
 	}
 	if (ino==STATS_INODE) {
-		sinfo *statsinfo = sinfo_get(fi->fh);
+		sinfo *statsinfo = (fi!=NULL)?sinfo_get(fi->fh):NULL;
 		if (statsinfo!=NULL) {
 			pthread_mutex_lock(&(statsinfo->lock));		// make helgrind happy
 			statsinfo->reset=1;
@@ -3738,7 +3742,10 @@ void mfs_write(fuse_req_t req, fuse_ino_t ino, const char *buf, size_t size, off
 		oplog_printf(&ctx,"write (%lu,%llu,%llu): OK (%llu)",(unsigned long int)ino,(unsigned long long int)size,(unsigned long long int)off,(unsigned long long int)size);
 		if (newfleng>0) {
 			read_inode_set_length_passive(ino,newfleng);
+			write_data_inode_setmaxfleng(ino,newfleng);
+			finfo_change_fleng(ino,newfleng);
 		}
+		read_inode_clear_cache(ino,off,size);
 		fdcache_invalidate(ino);
 		fuse_reply_write(req,size);
 	}
@@ -4453,7 +4460,7 @@ void mfs_setlk(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi, struct
 //     10 - mask
 //     20 - other
 
-int mfs_getacl(fuse_req_t req, fuse_ino_t ino, uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t aclxattr,const uint8_t **buff,uint32_t *leng) {
+int mfs_getfacl(fuse_req_t req,fuse_ino_t ino,/*uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,*/uint8_t aclxattr,const uint8_t **buff,uint32_t *leng) {
 	uint16_t userperm;
 	uint16_t groupperm;
 	uint16_t otherperm;
@@ -4470,7 +4477,7 @@ int mfs_getacl(fuse_req_t req, fuse_ino_t ino, uint8_t opened,uint32_t uid,uint3
 	(void)req;
 	*buff = NULL;
 	*leng = 0;
-	status = fs_getacl(ino,opened,uid,gids,gid,aclxattr,&userperm,&groupperm,&otherperm,&maskperm,&namedusers,&namedgroups,&namedacls,&namedaclssize);
+	status = fs_getfacl(ino,/*opened,uid,gids,gid,*/aclxattr,&userperm,&groupperm,&otherperm,&maskperm,&namedusers,&namedgroups,&namedacls,&namedaclssize);
 
 	if (status!=MFS_STATUS_OK) {
 		return status;
@@ -4523,7 +4530,7 @@ int mfs_getacl(fuse_req_t req, fuse_ino_t ino, uint8_t opened,uint32_t uid,uint3
 	return MFS_STATUS_OK;
 }
 
-int mfs_setacl(fuse_req_t req,fuse_ino_t ino,uint32_t uid,uint8_t aclxattr,const char *buff,uint32_t leng) {
+int mfs_setfacl(fuse_req_t req,fuse_ino_t ino,uint32_t uid,uint8_t aclxattr,const char *buff,uint32_t leng) {
 	uint16_t userperm;
 	uint16_t groupperm;
 	uint16_t otherperm;
@@ -4607,7 +4614,7 @@ int mfs_setacl(fuse_req_t req,fuse_ino_t ino,uint32_t uid,uint8_t aclxattr,const
 		}
 	}
 //	fprintf(stderr,"namedacls end ptr: %p\n",(void*)p);
-	return fs_setacl(ino,uid,aclxattr,userperm,groupperm,otherperm,maskperm,namedusers,namedgroups,namedacls,(namedusers+namedgroups)*6);
+	return fs_setfacl(ino,uid,aclxattr,userperm,groupperm,otherperm,maskperm,namedusers,namedgroups,namedacls,(namedusers+namedgroups)*6);
 }
 
 #if defined(__APPLE__)
@@ -4692,7 +4699,7 @@ void mfs_setxattr (fuse_req_t req, fuse_ino_t ino, const char *name, const char 
 		return;
 	}
 	if (aclxattr) {
-		status = mfs_setacl(req,ino,ctx.uid,aclxattr,value,size);
+		status = mfs_setfacl(req,ino,ctx.uid,aclxattr,value,size);
 	} else {
 		if (full_permissions) {
 			gids = groups_get(ctx.pid,ctx.uid,ctx.gid);
@@ -4790,7 +4797,7 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 	} else {
 		xattr_value_release = NULL;
 	}
-	if (full_permissions && xattr_value_release==NULL) { // and get groups only if data were not found in cache
+	if (aclxattr==0 && full_permissions && xattr_value_release==NULL) { // and get groups only if data were not found in cache
 		if (strcmp(name,"com.apple.quarantine")==0) { // special case - obtaining groups from the kernel here leads to freeze, so avoid it
 			gids = groups_get_x(ctx.pid,ctx.uid,ctx.gid,1);
 		} else {
@@ -4806,13 +4813,8 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 				buff = NULL;
 				leng = 0;
 			} else {
-				if (aclxattr) {
-					if (gids!=NULL) { // full_permissions
-						status = mfs_getacl(req,ino,0,ctx.uid,gids->gidcnt,gids->gidtab,aclxattr,&buff,&leng);
-					} else {
-						uint32_t gidtmp = ctx.gid;
-						status = mfs_getacl(req,ino,0,ctx.uid,1,&gidtmp,aclxattr,&buff,&leng);
-					}
+				if (aclxattr!=0) {
+					status = mfs_getfacl(req,ino,aclxattr,&buff,&leng);
 				} else {
 					if (gids!=NULL) { // full_permissions
 						status = fs_getxattr(ino,0,ctx.uid,gids->gidcnt,gids->gidtab,nleng,(const uint8_t*)name,MFS_XATTR_GETA_DATA,&buff,&leng);
@@ -4832,13 +4834,8 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 			buff = NULL;
 			leng = 0;
 		} else {
-			if (aclxattr) {
-				if (gids!=NULL) { // full_permissions
-					status = mfs_getacl(req,ino,0,ctx.uid,gids->gidcnt,gids->gidtab,aclxattr,&buff,&leng);
-				} else {
-					uint32_t gidtmp = ctx.gid;
-					status = mfs_getacl(req,ino,0,ctx.uid,1,&gidtmp,aclxattr,&buff,&leng);
-				}
+			if (aclxattr!=0) {
+				status = mfs_getfacl(req,ino,aclxattr,&buff,&leng);
 			} else {
 				if (gids!=NULL) { // full_permissions
 					status = fs_getxattr(ino,0,ctx.uid,gids->gidcnt,gids->gidtab,nleng,(const uint8_t*)name,mode,&buff,&leng);
@@ -5006,7 +5003,7 @@ void mfs_removexattr (fuse_req_t req, fuse_ino_t ino, const char *name) {
 	}
 	if (usecache == 0) {
 		if (aclxattr) {
-			status = fs_setacl(ino,ctx.uid,aclxattr,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0,0,NULL,0);
+			status = fs_setfacl(ino,ctx.uid,aclxattr,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0,0,NULL,0);
 		} else {
 			if (full_permissions) {
 				gids = groups_get(ctx.pid,ctx.uid,ctx.gid);
@@ -5031,7 +5028,7 @@ void mfs_removexattr (fuse_req_t req, fuse_ino_t ino, const char *name) {
 	}
 	if (usecache) {
 		if (aclxattr) {
-			status = fs_setacl(ino,ctx.uid,aclxattr,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0,0,NULL,0);
+			status = fs_setfacl(ino,ctx.uid,aclxattr,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0,0,NULL,0);
 		} else {
 			if (full_permissions) {
 				gids = groups_get(ctx.pid,ctx.uid,ctx.gid);

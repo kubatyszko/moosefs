@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -223,17 +223,29 @@ int do_access(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,'(');
 	GETU32(inode,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_access(ts,inode);
 }
 
 int do_append(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	uint32_t inode,inode_src;
+	uint32_t slice_from,slice_to;
 	EAT(ptr,filename,lv,'(');
 	GETU32(inode,ptr);
 	EAT(ptr,filename,lv,',');
 	GETU32(inode_src,ptr);
+	if (*ptr==')') {
+		slice_from = 0xFFFFFFFF;
+		slice_to = 0;
+	} else {
+		EAT(ptr,filename,lv,',');
+		GETU32(slice_from,ptr);
+		EAT(ptr,filename,lv,',');
+		GETU32(slice_to,ptr);
+	}
 	EAT(ptr,filename,lv,')');
-	return fs_mr_append(ts,inode,inode_src);
+	(void)ptr; // silence cppcheck warnings
+	return fs_mr_append_slice(ts,inode,inode_src,slice_from,slice_to);
 }
 
 int do_acquire(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
@@ -244,6 +256,7 @@ int do_acquire(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(cuid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return of_mr_acquire(inode,cuid);
 }
 
@@ -280,11 +293,12 @@ int do_amtime(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(ctime,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_amtime(inode,atime,mtime,ctime);
 }
 
 int do_attr(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
-	uint32_t inode,mode,uid,gid,atime,mtime;
+	uint32_t inode,mode,uid,gid,atime,mtime,aclmode;
 	EAT(ptr,filename,lv,'(');
 	GETU32(inode,ptr);
 	EAT(ptr,filename,lv,',');
@@ -297,8 +311,15 @@ int do_attr(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	GETU32(atime,ptr);
 	EAT(ptr,filename,lv,',');
 	GETU32(mtime,ptr);
+	if (*ptr==',') {
+		EAT(ptr,filename,lv,',');
+		GETU32(aclmode,ptr);
+	} else {
+		aclmode = mode;
+	}
 	EAT(ptr,filename,lv,')');
-	return fs_mr_attr(ts,inode,mode,uid,gid,atime,mtime);
+	(void)ptr; // silence cppcheck warnings
+	return fs_mr_attr(ts,inode,mode,uid,gid,atime,mtime,aclmode);
 }
 
 /*
@@ -364,6 +385,7 @@ int do_csdbop(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(arg,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return csdb_mr_op(op,ip,port,arg);
 }
 
@@ -376,6 +398,7 @@ int do_csadd(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(port,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return csdb_mr_csadd(ip,port);
 }
 
@@ -388,6 +411,7 @@ int do_csdel(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(port,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return csdb_mr_csdel(ip,port);
 }
 
@@ -401,6 +425,7 @@ int do_chunkadd(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(lockedto,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return chunk_mr_chunkadd(ts,chunkid,version,lockedto);
 }
 
@@ -413,16 +438,17 @@ int do_chunkdel(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(version,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return chunk_mr_chunkdel(ts,chunkid,version);
 }
 
 int do_emptytrash(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
-	uint32_t sustainedinodes,freeinodes,tid;
+	uint32_t sustainedinodes,freeinodes,bid;
 	EAT(ptr,filename,lv,'(');
 	if (*ptr!=')') {
-		GETU32(tid,ptr);
+		GETU32(bid,ptr);
 	} else {
-		tid = 0xFFFFFFFF;
+		bid = 0xFFFFFFFF;
 	}
 	EAT(ptr,filename,lv,')');
 	EAT(ptr,filename,lv,':');
@@ -430,17 +456,22 @@ int do_emptytrash(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) 
 	EAT(ptr,filename,lv,',');
 	GETU32(sustainedinodes,ptr);
 	(void)ptr; // silence cppcheck warnings
-	return fs_mr_emptytrash(ts,tid,freeinodes,sustainedinodes);
+	return fs_mr_emptytrash(ts,bid,freeinodes,sustainedinodes);
 }
 
 int do_emptysustained(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
-	uint32_t freeinodes;
+	uint32_t freeinodes,bid;
 	EAT(ptr,filename,lv,'(');
+	if (*ptr!=')') {
+		GETU32(bid,ptr);
+	} else {
+		bid = 0xFFFFFFFF;
+	}
 	EAT(ptr,filename,lv,')');
 	EAT(ptr,filename,lv,':');
 	GETU32(freeinodes,ptr);
 	(void)ptr; // silence cppcheck warnings
-	return fs_mr_emptysustained(ts,freeinodes);
+	return fs_mr_emptysustained(ts,bid,freeinodes);
 }
 
 int do_flock(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
@@ -458,6 +489,7 @@ int do_flock(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	cmd = *ptr;
 	ptr++;
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return flock_mr_change(inode,sessionid,owner,cmd);
 }
 
@@ -483,6 +515,7 @@ int do_incversion(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) 
 	EAT(ptr,filename,lv,'(');
 	GETU64(chunkid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return chunk_mr_increase_version(chunkid);
 }
 
@@ -496,6 +529,7 @@ int do_link(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETNAME(name,ptr,filename,lv,')');
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_link(ts,inode,parent,strlen((char*)name),name);
 }
 
@@ -514,6 +548,7 @@ int do_length(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 		canmodmtime = 1;
 	}
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_length(ts,inode,length,canmodmtime);
 }
 
@@ -541,6 +576,7 @@ int do_nextchunkid(const char *filename,uint64_t lv,uint32_t ts,const char *ptr)
 	EAT(ptr,filename,lv,'(');
 	GETU64(chunkid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return chunk_mr_nextchunkid(chunkid);
 }
 
@@ -565,6 +601,7 @@ int do_posixlock(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(pid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return posix_lock_mr_change(inode,sessionid,owner,cmd,start,end,pid);
 }
 
@@ -573,6 +610,7 @@ int do_purge(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,'(');
 	GETU32(inode,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_purge(ts,inode);
 }
 
@@ -612,6 +650,7 @@ int do_quota(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 		timelimit = 0;
 	}
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_quota(ts,inode,exceeded,flags,stimestamp,sinodes,hinodes,slength,hlength,ssize,hsize,srealsize,hrealsize,timelimit);
 }
 
@@ -637,6 +676,7 @@ int do_release(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(cuid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return of_mr_release(inode,cuid);
 }
 
@@ -798,6 +838,7 @@ int do_seschanged(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) 
 	EAT(ptr,filename,lv,',');
 	GETDATA(info,ileng,infosize,ptr,filename,lv,')');
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return sessions_mr_seschanged(sessionid,exportscsum,rootinode,sesflags,umaskval,rootuid,rootgid,mapalluid,mapallgid,mingoal,maxgoal,mintrashtime,maxtrashtime,peerip,info,ileng);
 }
 
@@ -808,6 +849,7 @@ int do_sesdel(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,'(');
 	GETU32(sessionid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return sessions_mr_sesdel(sessionid);
 }
 
@@ -817,6 +859,7 @@ int do_sesdisconnected(const char *filename,uint64_t lv,uint32_t ts,const char *
 	EAT(ptr,filename,lv,'(');
 	GETU32(sessionid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return sessions_mr_disconnected(sessionid,ts);
 }
 
@@ -833,6 +876,7 @@ int do_rollback(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU64(chunkid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_rollback(inode,indx,prevchunkid,chunkid);
 }
 
@@ -869,6 +913,7 @@ int do_setfilechunk(const char *filename,uint64_t lv,uint32_t ts,const char *ptr
 	EAT(ptr,filename,lv,',');
 	GETU64(chunkid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_set_file_chunk(inode,indx,chunkid);
 }
 
@@ -925,6 +970,7 @@ int do_setmetaid(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,'(');
 	GETU64(metaid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return meta_mr_setmetaid(metaid);
 }
 
@@ -938,6 +984,7 @@ int do_setpath(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETPATH(path,pathsize,ptr,filename,lv,')');
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_setpath(inode,path);
 }
 
@@ -978,6 +1025,7 @@ int do_setxattr(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETU32(mode,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_setxattr(ts,inode,strlen((char*)name),name,valueleng,value,mode);
 }
 
@@ -1010,6 +1058,7 @@ int do_setacl(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,',');
 	GETDATA(aclblob,aclblobleng,aclblobsize,ptr,filename,lv,')');
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	if (aclblobleng!=6U*(namedusers+namedgroups)) {
 		return MFS_ERROR_MISMATCH;
 	}
@@ -1058,6 +1107,7 @@ int do_snapshot(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	} else {
 		GETU32(umask,ptr);
 		EAT(ptr,filename,lv,')');
+		(void)ptr; // silence cppcheck warnings
 		return fs_mr_snapshot(ts,inode,parent,strlen((char*)name),name,smode,sesflags,uid,1,&gids,umask);
 	}
 }
@@ -1192,6 +1242,7 @@ int do_undel(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,'(');
 	GETU32(inode,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_undel(ts,inode);
 }
 
@@ -1215,6 +1266,7 @@ int do_unlock(const char *filename,uint64_t lv,uint32_t ts,const char *ptr) {
 	EAT(ptr,filename,lv,'(');
 	GETU64(chunkid,ptr);
 	EAT(ptr,filename,lv,')');
+	(void)ptr; // silence cppcheck warnings
 	return fs_mr_unlock(chunkid);
 }
 

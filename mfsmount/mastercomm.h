@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -41,6 +41,8 @@ void fs_notify_sendremoved(uint32_t cnt,uint32_t *inodes);
 //int fs_direct_read(int rfd,uint8_t *buff,uint32_t size);
 void fs_add_entry(uint32_t inode);
 void fs_forget_entry(uint32_t inode);
+void fs_inc_acnt(uint32_t inode);
+void fs_dec_acnt(uint32_t inode);
 // uint8_t fs_is_sustained_entry(uint32_t inode);
 
 void fs_get_fleng(uint32_t inode,uint64_t *fleng);
@@ -72,7 +74,6 @@ uint8_t fs_readdir(uint32_t inode,uint32_t uid,uint32_t gids,uint32_t *gid,uint8
 
 uint8_t fs_create(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mode,uint16_t cumask,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[35]);
 uint8_t fs_opencheck(uint32_t inode,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t flags,uint8_t attr[35]);
-void fs_release(uint32_t inode);
 
 uint8_t fs_readchunk(uint32_t inode,uint32_t indx,uint8_t chunkopflags,uint8_t *csdataver,uint64_t *length,uint64_t *chunkid,uint32_t *version,const uint8_t **csdata,uint32_t *csdatasize);
 uint8_t fs_writechunk(uint32_t inode,uint32_t indx,uint8_t chunkopflags,uint8_t *csdataver,uint64_t *length,uint64_t *chunkid,uint32_t *version,const uint8_t **csdata,uint32_t *csdatasize);
@@ -84,8 +85,8 @@ uint8_t fs_writeend(uint64_t chunkid,uint32_t inode,uint32_t indx,uint64_t lengt
 uint8_t fs_flock(uint32_t inode,uint32_t reqid,uint64_t owner,uint8_t cmd);
 uint8_t fs_posixlock(uint32_t inode,uint32_t reqid,uint64_t owner,uint8_t cmd,uint8_t type,uint64_t start,uint64_t end,uint32_t pid,uint8_t *rtype,uint64_t *rstart,uint64_t *rend,uint32_t *rpid);
 
-uint8_t fs_getacl(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t acltype,uint16_t *userperm,uint16_t *groupperm,uint16_t *otherperm,uint16_t *maskperm,uint16_t *namedusers,uint16_t *namedgroups,const uint8_t **namedacls,uint32_t *namedaclssize);
-uint8_t fs_setacl(uint32_t inode,uint32_t uid,uint8_t acltype,uint16_t userperm,uint16_t groupperm,uint16_t otherperm,uint16_t maskperm,uint16_t namedusers,uint16_t namedgroups,uint8_t *namedacls,uint32_t namedaclssize);
+uint8_t fs_getfacl(uint32_t inode,/*uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,*/uint8_t acltype,uint16_t *userperm,uint16_t *groupperm,uint16_t *otherperm,uint16_t *maskperm,uint16_t *namedusers,uint16_t *namedgroups,const uint8_t **namedacls,uint32_t *namedaclssize);
+uint8_t fs_setfacl(uint32_t inode,uint32_t uid,uint8_t acltype,uint16_t userperm,uint16_t groupperm,uint16_t otherperm,uint16_t maskperm,uint16_t namedusers,uint16_t namedgroups,uint8_t *namedacls,uint32_t namedaclssize);
 
 uint8_t fs_getxattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t nleng,const uint8_t *name,uint8_t mode,const uint8_t **vbuff,uint32_t *vleng);
 uint8_t fs_listxattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t mode,const uint8_t **dbuff,uint32_t *dleng);

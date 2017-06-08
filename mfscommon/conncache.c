@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
+ * Copyright (C) 2017 Jakub Kruszona-Zawadzki, Core Technology Sp. z o.o.
  * 
  * This file is part of MooseFS.
  * 
@@ -161,7 +161,7 @@ void* conncache_keepalive_thread(void* arg) {
 		}
 		ka = keep_alive;
 		zassert(pthread_mutex_unlock(&glock));
-		portable_usleep(10000);
+		portable_usleep(2500); // 200 * 2500 = 500000 = 0.5s (send nops every half second)
 	}
 	return arg;
 }
