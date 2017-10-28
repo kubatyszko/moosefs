@@ -49,8 +49,8 @@
 #include "md5.h"
 #include "MFSCommunication.h"
 
-#define tcpread(s,b,l) tcptoread(s,b,l,10000)
-#define tcpwrite(s,b,l) tcptowrite(s,b,l,10000)
+#define tcpread(s,b,l) tcptoread(s,b,l,20000)
+#define tcpwrite(s,b,l) tcptowrite(s,b,l,20000)
 
 #define STR_AUX(x) #x
 #define STR(x) STR_AUX(x)
@@ -786,7 +786,7 @@ int open_master_conn(const char *name,uint32_t *inode,mode_t *mode,uint64_t *len
 		*leng = stb.st_size;
 	}
 	if (current_master>=0) {
-	       	if (current_device==stb.st_dev) {
+		if (current_device==stb.st_dev) {
 			return current_master;
 		}
 		if (needsamedev) {
@@ -1832,7 +1832,7 @@ static inline int deserialize_sc(const uint8_t **rptr,uint32_t leng,storage_clas
 			sc->arch_labelmasks[i][og] = get32bit(rptr);
 		}
 	}
-	return  7+(sc->create_labelscnt+sc->keep_labelscnt+sc->arch_labelscnt)*4*MASKORGROUP;
+	return 7+(sc->create_labelscnt+sc->keep_labelscnt+sc->arch_labelscnt)*4*MASKORGROUP;
 }
 
 static inline uint32_t serialize_sc(uint8_t **wptr,const storage_class *sc) {
@@ -2388,7 +2388,7 @@ int set_sclass(const char *fname,uint8_t goal,const char src_storage_class_name[
 	put8bit(&wptr,goal);
 	put8bit(&wptr,mode);
 	if (goal==0xFF) {
-	       	if ((mode&SMODE_TMASK)==SMODE_EXCHANGE) {
+		if ((mode&SMODE_TMASK)==SMODE_EXCHANGE) {
 			put8bit(&wptr,snleng);
 			memcpy(wptr,src_storage_class_name,snleng);
 			wptr+=snleng;
@@ -3957,7 +3957,7 @@ int sc_node_info(int fd,uint32_t inode) {
 			return -1;
 		}
 		rptr = buff;
-		cmd = get32bit(&rptr);  // queryid
+		cmd = get32bit(&rptr); // queryid
 		if (cmd!=0) {
 			printf("inode: %"PRIu32" ; master query: wrong answer (queryid)\n",inode);
 			free(buff);
@@ -4740,7 +4740,7 @@ int make_snapshot(const char *dstname,char * const *srcnames,uint32_t srcelement
 			return -1;
 		}
 		if (!S_ISDIR(dst.st_mode)) {	// dst id not a directory
-		       	if (srcelements>1) {
+			if (srcelements>1) {
 				printf("can snapshot multiple elements only into existing directory\n");
 				return -1;
 			}
@@ -5223,8 +5223,11 @@ int main(int argc,char **argv) {
 				scadmin_mp = *argv;
 				argv++;
 				argc--;
+				if (argc==0) {
+					fprintf(stderr,"missing command after mountpoint\n\n");
+					usage(MFSSCADMIN);
+				}
 			}
-			fprintf(stderr,"%s ; %u\n",argv[0],CHECKNAME("list"));
 			if (CHECKNAME("create")) {
 				f = MFSMKSC;
 			} else if (CHECKNAME("make")) {
@@ -5246,7 +5249,7 @@ int main(int argc,char **argv) {
 			} else if (CHECKNAME("list")) {
 				f = MFSLSSC;
 			} else {
-				fprintf(stderr,"unknown storage class admin command\n");
+				fprintf(stderr,"unknown storage class admin command\n\n");
 				usage(MFSSCADMIN);
 			}
 		}

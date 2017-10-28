@@ -1154,12 +1154,13 @@ else: # CLI mode
 
 def getmasteraddresses():
 	m = []
-	try:
-		for i in socket.getaddrinfo(masterhost,masterport,socket.AF_INET,socket.SOCK_STREAM,socket.SOL_TCP):
-			if i[0]==socket.AF_INET and i[1]==socket.SOCK_STREAM and i[2]==socket.SOL_TCP:
-				m.append(i[4])
-	except Exception:
-		pass
+	for mhost in masterhost.replace(';',' ').replace(',',' ').split():
+		try:
+			for i in socket.getaddrinfo(mhost,masterport,socket.AF_INET,socket.SOCK_STREAM,socket.SOL_TCP):
+				if i[0]==socket.AF_INET and i[1]==socket.SOCK_STREAM and i[2]==socket.SOL_TCP:
+					m.append(i[4])
+		except Exception:
+			pass
 	return m
 
 #def mysend(socket,msg):
@@ -1855,6 +1856,9 @@ for mhost,mport in masterlist:
 						if sync==0:
 							statestr += " (DESYNC)"
 						followerfound = 1
+						followerconn = conn
+						followerinfo = data
+						follower_exports_checksum = exports_checksum
 					if workingstate==STATE_ELECT and electfound==0:
 						electfound = 1
 						electconn = conn
@@ -1894,6 +1898,11 @@ elif electfound:
 	masterinfo = electinfo
 	masterispro = 1
 	master_exports_checksum = elect_exports_checksum
+elif followerfound:
+	masterconn = followerconn
+	masterinfo = followerinfo
+	masterispro = 1
+	master_exports_checksum = follower_exports_checksum
 else:
 	masterconn = None
 	master_exports_checksum = 0
@@ -2358,6 +2367,29 @@ if leaderfound==0:
 		else:
 			print("Working master servers not found !!! - maybe you are using wrong port number or wrong dns name")
 	needseparator=1
+
+if not cgimode:
+	if leaderfound:
+		if masterconn.version_less_than(1,7,0):
+			allowedsections = ["IN","CS","HD","EX","MS","MO","MC","CC"]
+		elif masterconn.version_less_than(2,1,0):
+			allowedsections = ["IN","CS","HD","EX","MS","MO","QU","MC","CC"]
+		else:
+			allowedsections = ["IN","CS","HD","EX","MS","MO","RS","QU","MC","CC"]
+	elif electfound:
+		allowedsections = ["IN","CS","HD","EX","QU","MC","CC"]
+	elif followerfound:
+		allowedsections = ["IN","MC"]
+	else:
+		allowedsections = ["IN"]
+
+	filtered_sectionset = []
+	for section in sectionset:
+		if section in allowedsections:
+			filtered_sectionset.append(section)
+		else:
+			print("""section '%s' not allowed""" % section)
+	sectionset = filtered_sectionset
 
 # parse cgi parameters
 if cgimode:
@@ -6898,7 +6930,7 @@ if "MC" in sectionset:
 					else:
 						host = " / "+hostx
 					entrystr.append(namearg)
-					entrydesc[namearg] = "Server: %s%s%s" % (name,host," *" if strip==masterconn.host else "")
+					entrydesc[namearg] = "Server: %s%s%s" % (name,host," *" if (leaderfound and strip==masterconn.host) else "")
 					servers.append((strip,port,"ma_"+name.replace(".","_").replace(":","_"),entrydesc[namearg],nc))
 				if MCdata not in entrystr:
 					out.append("""<option value="" selected="selected"> data type or server</option>""")
@@ -7268,13 +7300,13 @@ if "MC" in sectionset:
 						if no==100:
 							datalist1 = MCresult[(host,port,0)]
 							datalist2 = MCresult[(host,port,1)]
-							if (datalist1!=None and datalist2!=None):
+							if (datalist1!=None and datalist2!=None and datalist1[e]<((2**64)-1) and datalist2[e]<((2**64)-1)):
 								data = datalist1[e]+datalist2[e]
 							else:
 								data = None
 						else:
 							datalist = MCresult[(host,port,no)]
-							if datalist!=None:
+							if datalist!=None and datalist[e]<((2**64)-1):
 								data = datalist[e]
 							else:
 								data = None

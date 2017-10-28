@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.60)
-AC_INIT([MFS], [3.0.92], [bugs@moosefs.com], [moosefs])
+AC_INIT([MFS], [3.0.97], [bugs@moosefs.com], [moosefs])
 release=1
 
 dnl AC_CONFIG_SRCDIR([MFSCommunication.h])
@@ -41,7 +41,7 @@ fi
 if test "$GCC" = "yes"; then
 	if test "$enable_externalcflags" != "yes" ; then
 		if test "$enable_gperftools" = "yes" -o "$enable_debug" = "yes" ; then
-			CFLAGS="-O0 -fno-omit-frame-pointer -g -DMFSDEBUG  -std=c99 -Wall -Wextra -Wshadow -pedantic -fwrapv"
+			CFLAGS="-O0 -fno-omit-frame-pointer -g -DMFSDEBUG -std=c99 -Wall -Wextra -Wshadow -pedantic -fwrapv"
 		else
 			CFLAGS="-O2 $CFLAGS -g -std=c99 -Wall -Wextra -Wshadow -pedantic -fwrapv"
 		fi
@@ -184,6 +184,16 @@ AC_CHECK_FUNCS([dup2 mlockall getcwd])
 # check for mmap support
 AC_CHECK_HEADERS([sys/mman.h], [AC_CHECK_FUNCS([mmap])])
 dnl AC_CHECK_HEADERS([sys/mman.h])
+
+# check for xattr support
+AC_CHECK_HEADERS([attr/xattr.h])
+AC_CHECK_HEADERS([sys/xattr.h])
+
+# check for bsd-locks (flock) optional header
+AC_CHECK_HEADERS([sys/file.h])
+
+# check if poll is in poll.h instead of sys/poll.h
+AC_CHECK_HEADERS([poll.h], [AC_CHECK_FUNCS([poll])])
 
 # optional I/O functions
 AC_CHECK_FUNCS([pread pwrite readv writev])

@@ -39,6 +39,15 @@
 #include <syslog.h>
 #include <inttypes.h>
 #include <pthread.h>
+#ifdef HAVE_SYS_XATTR_H
+#include <sys/xattr.h>
+#endif
+#ifdef HAVE_ATTR_XATTR_H
+#include <attr/xattr.h>
+#endif
+#ifdef HAVE_SYS_FILE_H
+#include <sys/file.h>
+#endif
 
 #include "stats.h"
 #include "oplog.h"
@@ -67,6 +76,26 @@
 #error FUSE_ROOT_ID is not equal to MFS_ROOT_ID
 #endif
 
+/* check for well known constants and define them if necessary */
+#ifndef XATTR_CREATE
+#define XATTR_CREATE 1
+#endif
+#ifndef XATTR_REPLACE
+#define XATTR_REPLACE 2
+#endif
+#ifndef LOCK_SH
+#define LOCK_SH 1
+#endif
+#ifndef LOCK_EX
+#define LOCK_EX 2
+#endif
+#ifndef LOCK_NB
+#define LOCK_NB 4
+#endif
+#ifndef LOCK_UN
+#define LOCK_UN 8
+#endif
+
 #if defined(__FreeBSD__)
 // workaround for bug in FreeBSD Fuse version (kernel part)
 #  define FREEBSD_FALSE_TRUNCATE_WORKAROUND 1
@@ -86,27 +115,27 @@
 #define MASTERINFO_INODE 0x7FFFFFFF
 // 0x0124 == 0b100100100 == 0444
 #ifdef MASTERINFO_WITH_VERSION
-static uint8_t masterinfoattr[35]={0, (TYPE_FILE << 4) | 0x01,0x24, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,14};
+static uint8_t masterinfoattr[ATTR_RECORD_SIZE]={0, (TYPE_FILE << 4) | 0x01,0x24, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,14, 0};
 #else
-static uint8_t masterinfoattr[35]={0, (TYPE_FILE << 4) | 0x01,0x24, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,10};
+static uint8_t masterinfoattr[ATTR_RECORD_SIZE]={0, (TYPE_FILE << 4) | 0x01,0x24, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,10, 0};
 #endif
 
 #define STATS_NAME ".stats"
 #define STATS_INODE 0x7FFFFFF0
 // 0x01A4 == 0b110100100 == 0644
-static uint8_t statsattr[35]={0, (TYPE_FILE << 4) | 0x01,0xA4, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,0};
+static uint8_t statsattr[ATTR_RECORD_SIZE]={0, (TYPE_FILE << 4) | 0x01,0xA4, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,0, 0};
 
 #define OPLOG_NAME ".oplog"
 #define OPLOG_INODE 0x7FFFFFF1
 #define OPHISTORY_NAME ".ophistory"
 #define OPHISTORY_INODE 0x7FFFFFF2
 // 0x0100 == 0b100000000 == 0400
-static uint8_t oplogattr[35]={0, (TYPE_FILE << 4) | 0x01,0x00, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,0};
+static uint8_t oplogattr[ATTR_RECORD_SIZE]={0, (TYPE_FILE << 4) | 0x01,0x00, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,0, 0};
 
 #define MOOSE_NAME ".mooseart"
 #define MOOSE_INODE 0x7FFFFFF3
 // 0x01A4 == 0b110100100 == 0644
-static uint8_t mooseattr[35]={0, (TYPE_FILE << 4) | 0x01,0xA4, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,0};
+static uint8_t mooseattr[ATTR_RECORD_SIZE]={0, (TYPE_FILE << 4) | 0x01,0xA4, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1, 0,0,0,0,0,0,0,0, 0};
 
 #define MIN_SPECIAL_INODE 0x7FFFFFF0
 #define IS_SPECIAL_INODE(ino) ((ino)>=MIN_SPECIAL_INODE)
@@ -864,7 +893,7 @@ static void mfs_type_to_stat(uint32_t inode,uint8_t type, struct stat *stbuf) {
 	}
 }
 
-static inline uint8_t mfs_attr_get_type(const uint8_t attr[35]) {
+static inline uint8_t mfs_attr_get_type(const uint8_t attr[ATTR_RECORD_SIZE]) {
 	if (attr[0]<64) { // 1.7.29 and up
 		return (attr[1]>>4);
 	} else {
@@ -872,7 +901,7 @@ static inline uint8_t mfs_attr_get_type(const uint8_t attr[35]) {
 	}
 }
 
-static inline uint8_t mfs_attr_get_mattr(const uint8_t attr[35]) {
+static inline uint8_t mfs_attr_get_mattr(const uint8_t attr[ATTR_RECORD_SIZE]) {
 	if (attr[0]<64) { // 1.7.29 and up
 		return attr[0];
 	} else {
@@ -880,19 +909,19 @@ static inline uint8_t mfs_attr_get_mattr(const uint8_t attr[35]) {
 	}
 }
 
-static inline uint64_t mfs_attr_get_fleng(const uint8_t attr[35]) {
+static inline uint64_t mfs_attr_get_fleng(const uint8_t attr[ATTR_RECORD_SIZE]) {
 	const uint8_t *ptr;
-	ptr = attr+(35-8);
+	ptr = attr+27;
 	return get64bit(&ptr);
 }
 
-static inline void mfs_attr_set_fleng(uint8_t attr[35],uint64_t fleng) {
+static inline void mfs_attr_set_fleng(uint8_t attr[ATTR_RECORD_SIZE],uint64_t fleng) {
 	uint8_t *ptr;
-	ptr = attr+(35-8);
+	ptr = attr+27;
 	put64bit(&ptr,fleng);
 }
 
-static void mfs_attr_modify(uint32_t to_set,uint8_t attr[35],struct stat *stbuf) {
+static void mfs_attr_modify(uint32_t to_set,uint8_t attr[ATTR_RECORD_SIZE],struct stat *stbuf) {
 	uint8_t mattr;
 	uint16_t attrmode;
 	uint8_t attrtype;
@@ -947,7 +976,7 @@ static void mfs_attr_modify(uint32_t to_set,uint8_t attr[35],struct stat *stbuf)
 	put32bit(&wptr,attrctime);
 }
 
-static void mfs_attr_to_stat(uint32_t inode,const uint8_t attr[35], struct stat *stbuf) {
+static void mfs_attr_to_stat(uint32_t inode,const uint8_t attr[ATTR_RECORD_SIZE], struct stat *stbuf) {
 	uint16_t attrmode;
 	uint8_t attrtype;
 	uint32_t attruid,attrgid,attratime,attrmtime,attrctime,attrnlink,attrrdev;
@@ -1219,7 +1248,7 @@ static int mfs_node_access(uint8_t attr[32],uint32_t uid,uint32_t gid,int mask) 
 */
 
 // simple access test for deleted cwd nodes - no ACL's
-int mfs_access_test(const uint8_t attr[35],int mmode,uint32_t uid,uint32_t gidcnt,uint32_t *gidtab) {
+int mfs_access_test(const uint8_t attr[ATTR_RECORD_SIZE],int mmode,uint32_t uid,uint32_t gidcnt,uint32_t *gidtab) {
 	uint8_t modebits,gok;
 	uint16_t attrmode;
 	uint32_t attruid,attrgid;
@@ -1258,7 +1287,7 @@ int mfs_access_test(const uint8_t attr[35],int mmode,uint32_t uid,uint32_t gidcn
 void mfs_access(fuse_req_t req, fuse_ino_t ino, int mask) {
 	int status;
 	struct fuse_ctx ctx;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	groups *gids;
 	int mmode;
 	uint16_t lflags;
@@ -1352,7 +1381,7 @@ void mfs_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
 	uint64_t maxfleng;
 	uint32_t inode;
 	uint32_t nleng;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	uint8_t csdataver;
 	uint16_t lflags;
 	uint64_t chunkid;
@@ -1638,7 +1667,7 @@ void mfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
 	uint64_t maxfleng;
 	double attr_timeout;
 	struct stat o_stbuf;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	uint8_t type;
 	char attrstr[256];
 	int status;
@@ -1704,38 +1733,6 @@ void mfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
 		fuse_reply_attr(req, &o_stbuf, 3600.0);
 		return;
 	}
-/*
-	if (ino==ATTRCACHE_INODE) {
-		memset(&o_stbuf, 0, sizeof(struct stat));
-		mfs_attr_to_stat(ino,attrcacheattr,&o_stbuf);
-		mfs_stats_inc(OP_GETATTR);
-		oplog_printf(&ctx,"getattr (%lu) (internal node ATTRCACHE)",(unsigned long int)ino);
-		fuse_reply_attr(req, &o_stbuf, 3600.0);
-		return;
-	}
-*/
-//	if (write_data_flush_inode(ino)) {
-//		mfs_stats_inc(OP_GETATTR);
-//		status = fs_getattr(ino,ctx.uid,ctx.gid,attr);
-//		status = mfs_errorconv(status);
-/*
-	if (newdircache) {
-		if (dir_cache_getattr(ino,attr)) {
-			mfs_stats_inc(OP_DIRCACHE_GETATTR);
-			status = 0;
-			oplog_printf(&ctx,"getattr (%lu) (data found in cache)",(unsigned long int)ino);
-		} else {
-			mfs_stats_inc(OP_GETATTR);
-			status = fs_getattr(ino,ctx.uid,ctx.gid,attr);
-			status = mfs_errorconv(status);
-			if (status!=0) {
-				oplog_printf(&ctx,"getattr (%lu) (data not found in cache: %s)",(unsigned long int)ino,strerr(status));
-			} else {
-				oplog_printf(&ctx,"getattr (%lu) (data not found in cache)",(unsigned long int)ino);
-			}
-		}
-	} else 
-*/
 	force_mode = 0;
 	if (usedircache && dcache_getattr(&ctx,ino,attr)) {
 		if (debug_mode) {
@@ -1838,7 +1835,7 @@ void mfs_make_setattr_str(char *strbuff,uint32_t strsize,struct stat *stbuf,int 
 void mfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *stbuf, int to_set, struct fuse_file_info *fi) {
 	struct stat o_stbuf;
 	uint64_t maxfleng;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	char setattr_str[150];
 	char attrstr[256];
 	double attr_timeout;
@@ -1905,11 +1902,11 @@ void mfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *stbuf, int to_set,
 		// ext3 compatibility - change ctime during this operation (usually chown(-1,-1))
 		if (full_permissions) {
 			gids = groups_get(ctx.pid,ctx.uid,ctx.gid);
-			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,gids->gidcnt,gids->gidtab,0,0,0,0,0,0,0,attr);
+			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,gids->gidcnt,gids->gidtab,0,0,0,0,0,0,0,0,attr);
 			groups_rel(gids);
 		} else {
 			uint32_t gidtmp = ctx.gid;
-			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,1,&gidtmp,0,0,0,0,0,0,0,attr);	
+			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,1,&gidtmp,0,0,0,0,0,0,0,0,attr);
 		}
 		if (status==MFS_ERROR_ENOENT) {
 			status = sstats_get(ino,attr,0);
@@ -1971,11 +1968,11 @@ void mfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *stbuf, int to_set,
 		}
 		if (full_permissions) {
 			gids = groups_get(ctx.pid,ctx.uid,ctx.gid);
-			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,gids->gidcnt,gids->gidtab,setmask,stbuf->st_mode&07777,stbuf->st_uid,stbuf->st_gid,stbuf->st_atime,stbuf->st_mtime,sugid_clear_mode,attr);
+			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,gids->gidcnt,gids->gidtab,setmask,stbuf->st_mode&07777,stbuf->st_uid,stbuf->st_gid,stbuf->st_atime,stbuf->st_mtime,0,sugid_clear_mode,attr);
 			groups_rel(gids);
 		} else {
 			uint32_t gidtmp = ctx.gid;
-			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,1,&gidtmp,setmask,stbuf->st_mode&07777,stbuf->st_uid,stbuf->st_gid,stbuf->st_atime,stbuf->st_mtime,sugid_clear_mode,attr);
+			status = fs_setattr(ino,(fi!=NULL)?1:0,ctx.uid,1,&gidtmp,setmask,stbuf->st_mode&07777,stbuf->st_uid,stbuf->st_gid,stbuf->st_atime,stbuf->st_mtime,0,sugid_clear_mode,attr);
 		}
 		if (status==MFS_ERROR_ENOENT) {
 			status = sstats_get(ino,attr,0);
@@ -2090,7 +2087,7 @@ void mfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *stbuf, int to_set,
 void mfs_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, dev_t rdev) {
 	struct fuse_entry_param e;
 	uint32_t inode;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	char modestr[11];
 	char attrstr[256];
 	uint8_t mattr;
@@ -2235,7 +2232,7 @@ void mfs_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
 void mfs_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode) {
 	struct fuse_entry_param e;
 	uint32_t inode;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	char modestr[11];
 	char attrstr[256];
 	uint8_t mattr;
@@ -2363,7 +2360,7 @@ void mfs_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
 void mfs_symlink(fuse_req_t req, const char *path, fuse_ino_t parent, const char *name) {
 	struct fuse_entry_param e;
 	uint32_t inode;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	char attrstr[256];
 	uint8_t mattr;
 	uint32_t nleng;
@@ -2456,7 +2453,7 @@ void mfs_rename(fuse_req_t req, fuse_ino_t parent, const char *name, fuse_ino_t 
 	uint32_t nleng,newnleng;
 	int status;
 	uint32_t inode;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	struct fuse_ctx ctx;
 	groups *gids;
 
@@ -2527,7 +2524,7 @@ void mfs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent, const char *
 	int status;
 	struct fuse_entry_param e;
 	uint32_t inode;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	char attrstr[256];
 	uint8_t mattr;
 	struct fuse_ctx ctx;
@@ -2598,7 +2595,7 @@ void mfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
 	dirbuf *dirinfo;
 	uint32_t dindex;
 	int status;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	struct fuse_ctx ctx;
 	groups *gids;
 
@@ -2673,7 +2670,7 @@ void mfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
 
 void mfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi) {
 	int status;
-        dirbuf *dirinfo;
+	dirbuf *dirinfo;
 	char buffer[READDIR_BUFFSIZE];
 	char name[MFS_NAME_MAX+1];
 	const uint8_t *ptr,*eptr;
@@ -2682,6 +2679,7 @@ void mfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct 
 	uint8_t nleng;
 	uint32_t inode;
 	uint8_t type;
+	uint8_t attrsize;
 	struct stat stbuf;
 	struct fuse_ctx ctx;
 	groups *gids;
@@ -2707,6 +2705,7 @@ void mfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct 
 		fuse_reply_err(req,EINVAL);
 		return;
 	}
+	attrsize = master_attrsize();
 	zassert(pthread_mutex_lock(&(dirinfo->lock)));
 	if (dirinfo->wasread==0 || (dirinfo->wasread==1 && off==0)) {
 		const uint8_t *dbuff;
@@ -2803,7 +2802,7 @@ void mfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct 
 		}
 		dirinfo->size = dsize;
 		if (usedircache && dirinfo->dataformat==1) {
-			dirinfo->dcache = dcache_new(&ctx,ino,dirinfo->p,dirinfo->size);
+			dirinfo->dcache = dcache_new(&ctx,ino,dirinfo->p,dirinfo->size,attrsize);
 		}
 	}
 	if (dirinfo->wasread<2) {
@@ -2828,12 +2827,12 @@ void mfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct 
 			memcpy(name,ptr,nleng);
 			name[nleng]=0;
 			ptr+=nleng;
-			off+=nleng+((dirinfo->dataformat)?40:6);
+			off+=nleng+((dirinfo->dataformat)?(attrsize+5):6);
 			if (ptr+5<=eptr) {
 				inode = get32bit(&ptr);
 				if (dirinfo->dataformat) {
 					mfs_attr_to_stat(inode,ptr,&stbuf);
-					ptr+=35;
+					ptr+=attrsize;
 				} else {
 					type = get8bit(&ptr);
 					mfs_type_to_stat(inode,type,&stbuf);
@@ -2963,7 +2962,7 @@ static void mfs_removefileinfo(uint32_t findex) {
 void mfs_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, struct fuse_file_info *fi) {
 	struct fuse_entry_param e;
 	uint32_t inode;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	char modestr[11];
 	char attrstr[256];
 	uint8_t mattr;
@@ -3114,7 +3113,7 @@ void mfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
 	uint8_t oflags,mmode;
 	uint16_t lflags;
 	void *fdrec;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	uint8_t mattr;
 	int status;
 	struct fuse_ctx ctx;
@@ -4225,7 +4224,7 @@ void mfs_getlk(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi, struct
 		type = POSIX_LOCK_WRLCK;
 		ctype = 'W';
 	} else {
-		return;
+		invalid = 1;
 	}
 	if (invalid) {
 		if (debug_mode) {
@@ -4334,7 +4333,7 @@ void mfs_setlk(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi, struct
 		type = POSIX_LOCK_WRLCK;
 		ctype = 'W';
 	} else {
-		return;
+		invalid = 1;
 	}
 	if (invalid) {
 		if (debug_mode) {
@@ -4673,32 +4672,28 @@ void mfs_setxattr (fuse_req_t req, fuse_ino_t ino, const char *name, const char 
 		fuse_reply_err(req,EINVAL);
 		return;
 	}
-#if defined(XATTR_CREATE) && defined(XATTR_REPLACE)
 	if ((flags&XATTR_CREATE) && (flags&XATTR_REPLACE)) {
 		oplog_printf(&ctx,"setxattr (%lu,%s,%llu,%d): %s",(unsigned long int)ino,name,(unsigned long long int)size,flags,strerr(EINVAL));
 		fuse_reply_err(req,EINVAL);
 		return;
 	}
 	mode = (flags==XATTR_CREATE)?MFS_XATTR_CREATE_ONLY:(flags==XATTR_REPLACE)?MFS_XATTR_REPLACE_ONLY:MFS_XATTR_CREATE_OR_REPLACE;
-#else
-	mode = 0;
-#endif
-	aclxattr = 0;
+	aclxattr = POSIX_ACL_NONE;
 	if (strcmp(name,"system.posix_acl_access")==0) {
-		aclxattr=1;
+		aclxattr = POSIX_ACL_ACCESS;
 	} else if (strcmp(name,"system.posix_acl_default")==0) {
-		aclxattr=2;
+		aclxattr = POSIX_ACL_DEFAULT;
 	}
 	(void)position;
 	if (xattr_cache_on) {
 		xattr_cache_del(ino,nleng,(const uint8_t*)name);
 	}
-	if (aclxattr && xattr_acl_support==0) {
+	if (aclxattr!=POSIX_ACL_NONE && xattr_acl_support==0) {
 		oplog_printf(&ctx,"setxattr (%lu,%s,%llu,%d): %s",(unsigned long int)ino,name,(unsigned long long int)size,flags,strerr(ENOTSUP));
 		fuse_reply_err(req,ENOTSUP);
 		return;
 	}
-	if (aclxattr) {
+	if (aclxattr!=POSIX_ACL_NONE) {
 		status = mfs_setfacl(req,ino,ctx.uid,aclxattr,value,size);
 	} else {
 		if (full_permissions) {
@@ -4728,7 +4723,7 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 	uint32_t position=0;
 #endif /* __APPLE__ */
 	uint32_t nleng;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	int status;
 	uint8_t mode;
 	const uint8_t *buff;
@@ -4737,6 +4732,7 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 	groups *gids;
 	void *xattr_value_release;
 	uint8_t aclxattr;
+	uint8_t use_cache;
 
 	if (no_xattrs) {
 		fuse_reply_err(req,ENOSYS);
@@ -4780,13 +4776,13 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 	} else {
 		mode = MFS_XATTR_GETA_DATA;
 	}
-	aclxattr = 0;
+	aclxattr = POSIX_ACL_NONE;
 	if (strcmp(name,"system.posix_acl_access")==0) {
-		aclxattr=1;
+		aclxattr = POSIX_ACL_ACCESS;
 	} else if (strcmp(name,"system.posix_acl_default")==0) {
-		aclxattr=2;
+		aclxattr = POSIX_ACL_DEFAULT;
 	}
-	if (aclxattr && xattr_acl_support==0) {
+	if (aclxattr!=POSIX_ACL_NONE && xattr_acl_support==0) {
 		oplog_printf(&ctx,"getxattr (%lu,%s,%llu): %s",(unsigned long int)ino,name,(unsigned long long int)size,strerr(ENOTSUP));
 		fuse_reply_err(req,ENOTSUP);
 		return;
@@ -4797,7 +4793,7 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 	} else {
 		xattr_value_release = NULL;
 	}
-	if (aclxattr==0 && full_permissions && xattr_value_release==NULL) { // and get groups only if data were not found in cache
+	if (aclxattr==POSIX_ACL_NONE && full_permissions && xattr_value_release==NULL) { // and get groups only if data were not found in cache
 		if (strcmp(name,"com.apple.quarantine")==0) { // special case - obtaining groups from the kernel here leads to freeze, so avoid it
 			gids = groups_get_x(ctx.pid,ctx.uid,ctx.gid,1);
 		} else {
@@ -4806,14 +4802,19 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 	} else {
 		gids = NULL;
 	}
+	use_cache = 0;
 	if (xattr_cache_on) {
 		if (xattr_value_release==NULL) {
 			if (usedircache && dcache_getattr(&ctx,ino,attr) && (mfs_attr_get_mattr(attr)&MATTR_NOXATTR)) { // no xattr
 				status = MFS_ERROR_ENOATTR;
 				buff = NULL;
 				leng = 0;
+				use_cache = 2;
+				if (debug_mode) {
+					fprintf(stderr,"getxattr: sending negative answer using open dir cache\n");
+				}
 			} else {
-				if (aclxattr!=0) {
+				if (aclxattr!=POSIX_ACL_NONE) {
 					status = mfs_getfacl(req,ino,aclxattr,&buff,&leng);
 				} else {
 					if (gids!=NULL) { // full_permissions
@@ -4825,16 +4826,23 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 				}
 			}
 			xattr_cache_set(ino,ctx.uid,ctx.gid,nleng,(const uint8_t*)name,buff,leng,status);
-		} else if (debug_mode) {
-			fprintf(stderr,"getxattr: sending data from cache\n");
+		} else {
+			use_cache = 1;
+			if (debug_mode) {
+				fprintf(stderr,"getxattr: sending data from cache\n");
+			}
 		}
 	} else {
 		if (usedircache && dcache_getattr(&ctx,ino,attr) && (mfs_attr_get_mattr(attr)&MATTR_NOXATTR)) { // no xattr
 			status = MFS_ERROR_ENOATTR;
 			buff = NULL;
 			leng = 0;
+			use_cache = 2;
+			if (debug_mode) {
+				fprintf(stderr,"getxattr: sending negative answer using open dir cache\n");
+			}
 		} else {
-			if (aclxattr!=0) {
+			if (aclxattr!=POSIX_ACL_NONE) {
 				status = mfs_getfacl(req,ino,aclxattr,&buff,&leng);
 			} else {
 				if (gids!=NULL) { // full_permissions
@@ -4851,7 +4859,7 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 	}
 	status = mfs_errorconv(status);
 	if (status!=0) {
-		oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: %s",(unsigned long int)ino,name,(unsigned long long int)size,(xattr_value_release==NULL)?"":" (using cache)",strerr(status));
+		oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: %s",(unsigned long int)ino,name,(unsigned long long int)size,(use_cache==0)?"":(use_cache==1)?" (using cache)":" (using open dir cache)",strerr(status));
 		fuse_reply_err(req,status);
 		if (xattr_value_release!=NULL) {
 			xattr_cache_rel(xattr_value_release);
@@ -4859,14 +4867,14 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 		return;
 	}
 	if (size==0) {
-		oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: OK (%"PRIu32")",(unsigned long int)ino,name,(unsigned long long int)size,(xattr_value_release==NULL)?"":" (using cache)",leng);
+		oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: OK (%"PRIu32")",(unsigned long int)ino,name,(unsigned long long int)size,(use_cache==0)?"":(use_cache==1)?" (using cache)":" (using open dir cache)",leng);
 		fuse_reply_xattr(req,leng);
 	} else {
 		if (leng>size) {
-			oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: %s",(unsigned long int)ino,name,(unsigned long long int)size,(xattr_value_release==NULL)?"":" (using cache)",strerr(ERANGE));
+			oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: %s",(unsigned long int)ino,name,(unsigned long long int)size,(use_cache==0)?"":(use_cache==1)?" (using cache)":" (using open dir cache)",strerr(ERANGE));
 			fuse_reply_err(req,ERANGE);
 		} else {
-			oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: OK (%"PRIu32")",(unsigned long int)ino,name,(unsigned long long int)size,(xattr_value_release==NULL)?"":" (using cache)",leng);
+			oplog_printf(&ctx,"getxattr (%lu,%s,%llu)%s: OK (%"PRIu32")",(unsigned long int)ino,name,(unsigned long long int)size,(use_cache==0)?"":(use_cache==1)?" (using cache)":" (using open dir cache)",leng);
 			fuse_reply_buf(req,(const char*)buff,leng);
 		}
 	}
@@ -4878,7 +4886,7 @@ void mfs_getxattr (fuse_req_t req, fuse_ino_t ino, const char *name, size_t size
 void mfs_listxattr (fuse_req_t req, fuse_ino_t ino, size_t size) {
 	const uint8_t *buff;
 	uint32_t leng;
-	uint8_t attr[35];
+	uint8_t attr[ATTR_RECORD_SIZE];
 	int status;
 	uint8_t mode;
 	struct fuse_ctx ctx;
@@ -4904,6 +4912,7 @@ void mfs_listxattr (fuse_req_t req, fuse_ino_t ino, size_t size) {
 	} else {
 		mode = MFS_XATTR_GETA_DATA;
 	}
+	// posix_acl_XXX are not added here - on purpose (on XFS getfattr doesn't list those ACL-like xattrs)
 	if (usedircache && dcache_getattr(&ctx,ino,attr) && (mfs_attr_get_mattr(attr)&MATTR_NOXATTR)) { // no xattr
 		status = MFS_STATUS_OK;
 		buff = NULL;
@@ -4962,13 +4971,13 @@ void mfs_removexattr (fuse_req_t req, fuse_ino_t ino, const char *name) {
 		fuse_reply_err(req,EPERM);
 		return;
 	}
-	aclxattr = 0;
+	aclxattr = POSIX_ACL_NONE;
 	if (strcmp(name,"system.posix_acl_access")==0) {
-		aclxattr=1;
+		aclxattr = POSIX_ACL_ACCESS;
 	} else if (strcmp(name,"system.posix_acl_default")==0) {
-		aclxattr=2;
+		aclxattr = POSIX_ACL_DEFAULT;
 	}
-	if (aclxattr && xattr_acl_support==0) {
+	if (aclxattr!=POSIX_ACL_NONE && xattr_acl_support==0) {
 		oplog_printf(&ctx,"removexattr (%lu,%s): %s",(unsigned long int)ino,name,strerr(ENOTSUP));
 		fuse_reply_err(req,ENOTSUP);
 		return;
@@ -5002,7 +5011,7 @@ void mfs_removexattr (fuse_req_t req, fuse_ino_t ino, const char *name) {
 		}
 	}
 	if (usecache == 0) {
-		if (aclxattr) {
+		if (aclxattr!=POSIX_ACL_NONE) {
 			status = fs_setfacl(ino,ctx.uid,aclxattr,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0,0,NULL,0);
 		} else {
 			if (full_permissions) {
@@ -5027,7 +5036,7 @@ void mfs_removexattr (fuse_req_t req, fuse_ino_t ino, const char *name) {
 		fuse_reply_err(req,0);
 	}
 	if (usecache) {
-		if (aclxattr) {
+		if (aclxattr!=POSIX_ACL_NONE) {
 			status = fs_setfacl(ino,ctx.uid,aclxattr,0xFFFF,0xFFFF,0xFFFF,0xFFFF,0,0,NULL,0);
 		} else {
 			if (full_permissions) {

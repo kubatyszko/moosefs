@@ -19,13 +19,13 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include "config.h"
+# include "config.h"
 #endif
 
 #ifdef WIN32
-#include "portable.h"
+# include "portable.h"
 #else
-#define MMAP_ALLOC 1
+# define MMAP_ALLOC 1
 #endif
 
 #include <stdio.h>
@@ -33,8 +33,12 @@
 #include <string.h>
 #include <unistd.h>
 #ifndef WIN32
-#include <sys/poll.h>
-#include <syslog.h>
+# ifdef HAVE_POLL_H
+#  include <poll.h>
+# else
+#  include <sys/poll.h>
+# endif
+# include <syslog.h>
 #endif
 #include <sys/time.h>
 #include <time.h>
@@ -42,17 +46,17 @@
 #include <errno.h>
 #include <pthread.h>
 #ifdef MMAP_ALLOC
-#include <sys/types.h>
-#include <sys/mman.h>
+# include <sys/types.h>
+# include <sys/mman.h>
 #endif
 #ifndef WIN32
-#include <pwd.h>
-#include <grp.h>
+# include <pwd.h>
+# include <grp.h>
 #endif
 
 #include "MFSCommunication.h"
 #ifndef WIN32
-#include "stats.h"
+# include "stats.h"
 #endif
 #include "sockets.h"
 #include "strerr.h"
@@ -169,6 +173,7 @@ static pthread_mutex_t fdlock,reclock,aflock,amtimelock;
 static uint32_t sessionid;
 static uint64_t metaid;
 static uint32_t masterversion;
+static uint8_t attrsize;
 
 static char masterstrip[17];
 static uint32_t masterip=0;
@@ -195,12 +200,29 @@ uint32_t master_version(void) {
 	return mver;
 }
 
+uint8_t master_attrsize(void) {
+	uint8_t asize;
+	pthread_mutex_lock(&fdlock);
+	asize = attrsize;
+	pthread_mutex_unlock(&fdlock);
+	return asize;
+}
+
 uint32_t fs_getsrcip() {
 	uint32_t sip;
 	pthread_mutex_lock(&fdlock);
 	sip = srcip;
 	pthread_mutex_unlock(&fdlock);
 	return sip;
+}
+
+static inline void copy_attr(const uint8_t *rptr,uint8_t attr[ATTR_RECORD_SIZE],uint8_t asize) {
+	if (asize>=ATTR_RECORD_SIZE) {
+		memcpy(attr,rptr,ATTR_RECORD_SIZE);
+	} else {
+		memcpy(attr,rptr,asize);
+		memset(attr+asize,0,(ATTR_RECORD_SIZE-asize));
+	}
 }
 
 enum {
@@ -1547,6 +1569,7 @@ int fs_connect(uint8_t oninit,struct connect_args_t *cargs) {
 		free(regbuff);
 		return -1;
 	}
+	attrsize = (masterversion>=VERSION2INT(3,0,93))?ATTR_RECORD_SIZE:35;
 	sessionid = get32bit(&rptr);
 	if ((cargs->meta && i==27) || (cargs->meta==0 && (i==43 || i==45))) {
 		metaid = get64bit(&rptr);
@@ -1784,7 +1807,7 @@ void fs_reconnect() {
 			return;
 		}
 		i = get32bit(&rptr);
-		if (i!=1 && i!=4) {
+		if (i!=1 && i!=4 && i!=5) {
 			syslog(LOG_WARNING,"master: register error (bad length: %"PRIu32")",i);
 			tcpclose(fd);
 			fd=-1;
@@ -1824,6 +1847,10 @@ void fs_reconnect() {
 			}
 		}
 	} while (i==4);
+	if (i==5) {
+		masterversion = get32bit(&rptr);
+		attrsize = ATTR_RECORD_SIZE;
+	}
 	if (rptr[0]!=0) {
 		sessionlost=(rptr[0]==MFS_ERROR_EPERM)?2:1;
 		syslog(LOG_WARNING,"master: register status: %s",mfs_strerror(rptr[0]));
@@ -2205,7 +2232,7 @@ void* fs_receive_thread(void *arg) {
 			}
 			internal = 0;
 //			if (cmd==MATOCL_FUSE_INVALIDATE_DATA_CACHE) {
-//			       	if (size==4) {
+//				if (size==4) {
 //					internal = 1;
 //				} else {
 //					syslog(LOG_WARNING,"master: unexpected msg size (msg:MATOCL_FUSE_INVALIDATE_DATA_CACHE ; size:%"PRIu32"/4)",size);
@@ -2531,6 +2558,38 @@ void fs_term(void) {
 	ep_term();
 }
 
+uint8_t fs_get_cfg(const char *opt_name,char opt_value[256]) {
+	uint8_t *wptr;
+	const uint8_t *rptr;
+	uint32_t i;
+	uint32_t nleng;
+	threc *rec = fs_get_my_threc();
+
+	nleng = strlen(opt_name);
+	if (nleng>255) {
+		return MFS_ERROR_EINVAL;
+	}
+	wptr = fs_createpacket(rec,ANTOAN_GET_CONFIG,1+nleng);
+	put8bit(&wptr,nleng);
+	memcpy(wptr,opt_name,nleng);
+	rptr = fs_sendandreceive(rec,ANTOAN_CONFIG_VALUE,&i);
+	if (rptr==NULL) {
+		return MFS_ERROR_IO;
+	} else if (i==0 || i>255) {
+		fs_disconnect();
+		return MFS_ERROR_IO;
+	} else {
+		nleng = get8bit(&rptr);
+		if (i!=(1U+nleng)) {
+			fs_disconnect();
+			return MFS_ERROR_IO;
+		}
+		memcpy(opt_value,rptr,nleng);
+		opt_value[nleng]=0;
+		return MFS_STATUS_OK;
+	}
+}
+
 void fs_statfs(uint64_t *totalspace,uint64_t *availspace,uint64_t *trashspace,uint64_t *sustainedspace,uint32_t *inodes) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
@@ -2603,13 +2662,15 @@ uint8_t fs_access(uint32_t inode,uint32_t uid,uint32_t gids,uint32_t *gid,uint16
 }
 
 #ifdef WIN32
-uint8_t fs_simple_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[35]) {
+uint8_t fs_simple_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(2,0,0)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_LOOKUP,13+nleng);
 		packetver = 0;
@@ -2646,9 +2707,9 @@ uint8_t fs_simple_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint3
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i==39 || i>=41) {
+	} else if (i==(uint32_t)(4+asize) || i>=(uint32_t)(6+asize)) {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	} else {
 		fs_disconnect();
@@ -2658,13 +2719,15 @@ uint8_t fs_simple_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint3
 }
 #endif
 
-uint8_t fs_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[35],uint16_t *lflags,uint8_t *csdataver,uint64_t *chunkid,uint32_t *version,const uint8_t **csdata,uint32_t *csdatasize) {
+uint8_t fs_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE],uint16_t *lflags,uint8_t *csdataver,uint64_t *chunkid,uint32_t *version,const uint8_t **csdata,uint32_t *csdatasize) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(2,0,0)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_LOOKUP,13+nleng);
 		packetver = 0;
@@ -2701,25 +2764,25 @@ uint8_t fs_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint32_t uid
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i==39) {
+	} else if (i==(uint32_t)(4+asize)) {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		*lflags = 0xFFFF;
 		ret = MFS_STATUS_OK;
-	} else if (i>=41) {
+	} else if (i>=(uint32_t)(6+asize)) {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
-		rptr+=35;
+		copy_attr(rptr,attr,asize);
+		rptr+=asize;
 		*lflags = get16bit(&rptr);
 		ret = MFS_STATUS_OK;
 		if ((*lflags) & LOOKUP_CHUNK_ZERO_DATA) {
-			if (i>=54) {
+			if (i>=(uint32_t)(19+asize)) {
 				*csdataver = get8bit(&rptr);
 				*chunkid = get64bit(&rptr);
 				*version = get32bit(&rptr);
 				*csdata = rptr;
-				*csdatasize = i-54;
-				if ((*csdataver)!=2 || ((i-54)%14)!=0) {
+				*csdatasize = i-(19+asize);
+				if ((*csdataver)!=2 || ((i-(19+asize))%14)!=0) {
 					ret = MFS_ERROR_IO;
 				}
 			} else {
@@ -2742,13 +2805,15 @@ uint8_t fs_lookup(uint32_t parent,uint8_t nleng,const uint8_t *name,uint32_t uid
 	return ret;
 }
 
-uint8_t fs_getattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gid,uint8_t attr[35]) {
+uint8_t fs_getattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gid,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(1,6,28)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_GETATTR,12);
 		packetver = 0;
@@ -2770,23 +2835,25 @@ uint8_t fs_getattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gid,uint8
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=35) {
+	} else if (i!=asize) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;
 }
 
-uint8_t fs_setattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t setmask,uint16_t attrmode,uint32_t attruid,uint32_t attrgid,uint32_t attratime,uint32_t attrmtime,uint8_t sugidclearmode,uint8_t attr[35]) {
+uint8_t fs_setattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t setmask,uint16_t attrmode,uint32_t attruid,uint32_t attrgid,uint32_t attratime,uint32_t attrmtime,uint8_t winattr,uint8_t sugidclearmode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(1,6,25)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_SETATTR,31);
 		packetver = 0;
@@ -2796,9 +2863,12 @@ uint8_t fs_setattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint
 	} else if (master_version()<VERSION2INT(2,0,0)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_SETATTR,33);
 		packetver = 2;
-	} else {
+	} else if (master_version()<VERSION2INT(3,0,93)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_SETATTR,33+gids*4);
 		packetver = 3;
+	} else {
+		wptr = fs_createpacket(rec,CLTOMA_FUSE_SETATTR,34+gids*4);
+		packetver = 4;
 	}
 	if (wptr==NULL) {
 		return MFS_ERROR_IO;
@@ -2830,6 +2900,9 @@ uint8_t fs_setattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint
 	put32bit(&wptr,attrgid);
 	put32bit(&wptr,attratime);
 	put32bit(&wptr,attrmtime);
+	if (packetver>=4) {
+		put8bit(&wptr,winattr);
+	}
 	if (packetver>=1) {
 		put8bit(&wptr,sugidclearmode);
 	}
@@ -2838,23 +2911,25 @@ uint8_t fs_setattr(uint32_t inode,uint8_t opened,uint32_t uid,uint32_t gids,uint
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=35) {
+	} else if (i!=asize) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;
 }
 
-uint8_t fs_truncate(uint32_t inode,uint8_t flags,uint32_t uid,uint32_t gids,uint32_t *gid,uint64_t attrlength,uint8_t attr[35]) {
+uint8_t fs_truncate(uint32_t inode,uint8_t flags,uint32_t uid,uint32_t gids,uint32_t *gid,uint64_t attrlength,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(2,0,0)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_TRUNCATE,21);
 		packetver = 0;
@@ -2890,12 +2965,12 @@ uint8_t fs_truncate(uint32_t inode,uint8_t flags,uint32_t uid,uint32_t gids,uint
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=35) {
+	} else if (i!=asize) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
 		if (attr!=NULL) {
-			memcpy(attr,rptr,35);
+			copy_attr(rptr,attr,asize);
 		}
 		ret = MFS_STATUS_OK;
 	}
@@ -2937,7 +3012,7 @@ uint8_t fs_readlink(uint32_t inode,const uint8_t **path) {
 	return ret;
 }
 
-uint8_t fs_symlink(uint32_t parent,uint8_t nleng,const uint8_t *name,const uint8_t *path,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[35]) {
+uint8_t fs_symlink(uint32_t parent,uint8_t nleng,const uint8_t *name,const uint8_t *path,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
@@ -2945,6 +3020,8 @@ uint8_t fs_symlink(uint32_t parent,uint8_t nleng,const uint8_t *name,const uint8
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	pleng = strlen((const char *)path)+1;
 	if (master_version()<VERSION2INT(2,0,0)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_SYMLINK,pleng+nleng+17);
@@ -2985,12 +3062,12 @@ uint8_t fs_symlink(uint32_t parent,uint8_t nleng,const uint8_t *name,const uint8
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=39) {
+	} else if (i!=(uint32_t)(4+asize)) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;
@@ -3020,13 +3097,14 @@ static inline uint8_t fsnodes_type_back_convert(uint8_t type) {
 	return type;
 }
 
-uint8_t fs_mknod(uint32_t parent,uint8_t nleng,const uint8_t *name,uint8_t type,uint16_t mode,uint16_t cumask,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t rdev,uint32_t *inode,uint8_t attr[35]) {
+uint8_t fs_mknod(uint32_t parent,uint8_t nleng,const uint8_t *name,uint8_t type,uint16_t mode,uint16_t cumask,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t rdev,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
 
 	if (master_version()<VERSION2INT(2,0,0)) {
 		mode &= ~cumask;
@@ -3074,24 +3152,26 @@ uint8_t fs_mknod(uint32_t parent,uint8_t nleng,const uint8_t *name,uint8_t type,
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=39) {
+	} else if (i!=(uint32_t)(4+asize)) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;
 }
 
-uint8_t fs_mkdir(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mode,uint16_t cumask,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t copysgid,uint32_t *inode,uint8_t attr[35]) {
+uint8_t fs_mkdir(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mode,uint16_t cumask,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t copysgid,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(1,6,25)) {
 		mode &= ~cumask;
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_MKDIR,15+nleng);
@@ -3140,12 +3220,12 @@ uint8_t fs_mkdir(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mode
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=39) {
+	} else if (i!=(uint32_t)(4+asize)) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;
@@ -3251,13 +3331,15 @@ uint8_t fs_rmdir(uint32_t parent,uint8_t nleng,const uint8_t *name,uint32_t uid,
 	return ret;
 }
 
-uint8_t fs_rename(uint32_t parent_src,uint8_t nleng_src,const uint8_t *name_src,uint32_t parent_dst,uint8_t nleng_dst,const uint8_t *name_dst,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[35]) {
+uint8_t fs_rename(uint32_t parent_src,uint8_t nleng_src,const uint8_t *name_src,uint32_t parent_dst,uint8_t nleng_dst,const uint8_t *name_dst,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(2,0,0)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_RENAME,18+nleng_src+nleng_dst);
 		packetver = 0;
@@ -3299,25 +3381,27 @@ uint8_t fs_rename(uint32_t parent_src,uint8_t nleng_src,const uint8_t *name_src,
 	} else if (i==1) {
 		ret = rptr[0];
 		*inode = 0;
-		memset(attr,0,35);
-	} else if (i!=39) {
+		memset(attr,0,ATTR_RECORD_SIZE);
+	} else if (i!=(uint32_t)(4+asize)) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;
 }
 
-uint8_t fs_link(uint32_t inode_src,uint32_t parent_dst,uint8_t nleng_dst,const uint8_t *name_dst,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[35]) {
+uint8_t fs_link(uint32_t inode_src,uint32_t parent_dst,uint8_t nleng_dst,const uint8_t *name_dst,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(2,0,0)) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_LINK,17+nleng_dst);
 		packetver = 0;
@@ -3355,12 +3439,12 @@ uint8_t fs_link(uint32_t inode_src,uint32_t parent_dst,uint8_t nleng_dst,const u
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=39) {
+	} else if (i!=(uint32_t)(4+asize)) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;
@@ -3458,62 +3542,15 @@ uint8_t fs_readdir(uint32_t inode,uint32_t uid,uint32_t gids,uint32_t *gid,uint8
 	return ret;
 }
 
-/*
-uint8_t fs_check(uint32_t inode,uint8_t dbuff[22]) {
-	uint8_t *wptr;
-	const uint8_t *rptr;
-	uint32_t i;
-	uint8_t ret;
-	uint16_t cbuff[11];
-	uint8_t copies;
-	uint16_t chunks;
-	threc *rec = fs_get_my_threc();
-	wptr = fs_createpacket(rec,CLTOMA_FUSE_CHECK,4);
-	if (wptr==NULL) {
-		return MFS_ERROR_IO;
-	}
-	put32bit(&wptr,inode);
-	rptr = fs_sendandreceive(rec,MATOCL_FUSE_CHECK,&i);
-	if (rptr==NULL) {
-		ret = MFS_ERROR_IO;
-	} else if (i==1) {
-		ret = rptr[0];
-	} else if (i%3!=0) {
-		fs_disconnect();
-		ret = MFS_ERROR_IO;
-	} else {
-		for (copies=0 ; copies<11 ; copies++) {
-			cbuff[copies]=0;
-		}
-		while (i>0) {
-			copies = get8bit(&rptr);
-			chunks = get16bit(&rptr);
-			if (copies<10) {
-				cbuff[copies]+=chunks;
-			} else {
-				cbuff[10]+=chunks;
-			}
-			i-=3;
-		}
-		wptr = dbuff;
-		for (copies=0 ; copies<11 ; copies++) {
-			chunks = cbuff[copies];
-			put16bit(&wptr,chunks);
-		}
-		ret = MFS_STATUS_OK;
-	}
-	return ret;
-}
-*/
-// FUSE - I/O
-
-uint8_t fs_create(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mode,uint16_t cumask,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[35]) {
+uint8_t fs_create(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mode,uint16_t cumask,uint32_t uid,uint32_t gids,uint32_t *gid,uint32_t *inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(1,7,25)) {
 		return MFS_ERROR_ENOTSUP;
 	}
@@ -3561,12 +3598,12 @@ uint8_t fs_create(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mod
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=39) {
+	} else if (i!=(uint32_t)(4+asize)) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
 		*inode = get32bit(&rptr);
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	pthread_mutex_lock(&fdlock);
@@ -3575,13 +3612,15 @@ uint8_t fs_create(uint32_t parent,uint8_t nleng,const uint8_t *name,uint16_t mod
 	return ret;
 }
 
-uint8_t fs_opencheck(uint32_t inode,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t flags,uint8_t attr[35]) {
+uint8_t fs_opencheck(uint32_t inode,uint32_t uid,uint32_t gids,uint32_t *gid,uint8_t flags,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	uint8_t packetver;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	if (master_version()<VERSION2INT(2,0,0) || gids==0) {
 		wptr = fs_createpacket(rec,CLTOMA_FUSE_OPEN,13);
 		packetver = 0;
@@ -3612,12 +3651,12 @@ uint8_t fs_opencheck(uint32_t inode,uint32_t uid,uint32_t gids,uint32_t *gid,uin
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		if (attr) {
-			memset(attr,0,35);
+			memset(attr,0,ATTR_RECORD_SIZE);
 		}
 		ret = rptr[0];
-	} else if (i==35) {
+	} else if (i==asize) {
 		if (attr) {
-			memcpy(attr,rptr,35);
+			copy_attr(rptr,attr,asize);
 		}
 		ret = MFS_STATUS_OK;
 	} else {
@@ -3968,12 +4007,14 @@ uint8_t fs_gettrash(uint32_t tid,const uint8_t **dbuff,uint32_t *dbuffsize) {
 	return ret;
 }
 
-uint8_t fs_getdetachedattr(uint32_t inode,uint8_t attr[35]) {
+uint8_t fs_getdetachedattr(uint32_t inode,uint8_t attr[ATTR_RECORD_SIZE]) {
 	uint8_t *wptr;
 	const uint8_t *rptr;
 	uint32_t i;
 	uint8_t ret;
 	threc *rec = fs_get_my_threc();
+	uint8_t asize = master_attrsize();
+
 	wptr = fs_createpacket(rec,CLTOMA_FUSE_GETDETACHEDATTR,4);
 	if (wptr==NULL) {
 		return MFS_ERROR_IO;
@@ -3984,11 +4025,11 @@ uint8_t fs_getdetachedattr(uint32_t inode,uint8_t attr[35]) {
 		ret = MFS_ERROR_IO;
 	} else if (i==1) {
 		ret = rptr[0];
-	} else if (i!=35) {
+	} else if (i!=asize) {
 		fs_disconnect();
 		ret = MFS_ERROR_IO;
 	} else {
-		memcpy(attr,rptr,35);
+		copy_attr(rptr,attr,asize);
 		ret = MFS_STATUS_OK;
 	}
 	return ret;

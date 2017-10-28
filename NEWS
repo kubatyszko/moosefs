@@ -1,5 +1,47 @@
 This file lists noteworthy changes in MooseFS.
 
+* MooseFS 3.0.98-1 (WIP)
+
+  - (mount) changed default cache mode on OS X from 'direct' to 'auto' due to problems with mmap
+
+* MooseFS 3.0.97-1 (2017-08-01)
+
+  - (tools) fixed trash/sustained size desynchronization after file length changed by chunk creation
+  - (mount) fixed handling invalid arguments in posix lock command
+
+* MooseFS 3.0.96-1 (2017-07-25)
+
+  - (tools) fixed segfault in mfsscadmin
+
+* MooseFS 3.0.95-1 (2017-07-17)
+
+  - (mount+master) added update master version during reconnection to master (after updating master server)
+  - (master) fixed winattr field size in setattr command
+  - (mount) fixed dirattrcache (freezes or inefficiences during listing directories - introduced in 3.0.93)
+  - (cgi) fixed displaying master charts without leader (pro only)
+  - (mount) added info about using open dir cache in oplog/ophisotry
+
+* MooseFS 3.0.94-1 (2017-06-22)
+
+  - (mount) fixed support for CREATE/REPLACE flags in setxattr
+  - (mount) added headers for flock defines
+  - (all) added check for poll.h header file and use it instead of sys/poll.h if possible
+  - (master) added test for WRITE access on directory during moving between different parents
+  - (master) added clearing suig/sgid during write
+  - (master+mount) increased max symlink path size to 4096 (posix compliance)
+
+* MooseFS 3.0.93-1 (2017-06-01)
+
+  - (master) redesigned xattr storage (much faster and uses less memory)
+  - (master) improved hash map in xattr and acl (static -> dynamic)
+  - (cgi+cli) added possibility to define master group as set of IP adresses divided by comma or semicolon
+  - (cs) fixed using fsync on closed descriptors (after change FSYNC_BEFORE_CLOSE option)
+  - (master) fixed removing default acl
+  - (master+mount) added support for basic Windows attributes (hidden,ro,system,archive)
+  - (cgi+cli) fixed working with followers only
+  - (all) added api for reading config parameters from master and chunkserver
+  - (tools) increased timeout from 10 seconds to 20 seconds (needed for huge snapshots)
+
 * MooseFS 3.0.92-1 (2017-04-27)
 
   - (master+tools) added chunk slices to mfsappendchunks
